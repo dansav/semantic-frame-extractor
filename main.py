@@ -13,7 +13,7 @@ from glob import glob
 from pathlib import Path
 
 from extractor import quick_extract, exhaustive_extract
-from extractor.matcher import EmbeddingMatcher, GenerationMatcher
+from extractor.matcher import EmbeddingMatcher, GenerationMatcher, TransformersEmbeddingMatcher
 from extractor.modes import save_frame
 
 
@@ -52,8 +52,8 @@ Examples:
     parser.add_argument(
         "--threshold", "-t",
         type=float,
-        default=0.5,
-        help="Confidence threshold 0.0-1.0 (default: 0.5)",
+        default=0.7,
+        help="Confidence threshold 0.0-1.0 (default: 0.7)",
     )
     parser.add_argument(
         "--interval", "-i",
@@ -81,9 +81,15 @@ Examples:
     )
     parser.add_argument(
         "--matcher",
-        choices=["embedding", "generation"],
-        default="embedding",
-        help="Matcher type: 'embedding' (faster) or 'generation' (more accurate for complex queries) (default: embedding)",
+        choices=["transformers", "generation", "embedding"],
+        default="transformers",
+        help="Matcher type: 'transformers' (local, fast), 'generation' (LM Studio API), 'embedding' (LM Studio embeddings API) (default: transformers)",
+    )
+    parser.add_argument(
+        "--max-pixels",
+        type=int,
+        default=1_000_000,
+        help="Max pixels for image resizing during matching (default: 1000000 = 1MP). Lower = faster but less accurate.",
     )
 
     return parser.parse_args()
@@ -91,7 +97,10 @@ Examples:
 
 def create_matcher(args: argparse.Namespace):
     """Create the appropriate matcher based on arguments."""
-    if args.matcher == "embedding":
+    if args.matcher == "transformers":
+        model = args.model or "Qwen/Qwen3-VL-Embedding-2B"
+        return TransformersEmbeddingMatcher(model_name=model, max_pixels=args.max_pixels)
+    elif args.matcher == "embedding":
         model = args.model or "qwen.qwen3-vl-embedding-2b"
         return EmbeddingMatcher(base_url=args.api_url, model=model)
     else:

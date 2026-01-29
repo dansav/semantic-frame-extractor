@@ -37,5 +37,6 @@ extractor/
 
 ## Matcher Types
 
-- `EmbeddingMatcher`: Uses vision-language embeddings (cosine similarity). Faster, good for object matching.
-- `GenerationMatcher`: Uses chat completions asking for confidence score. Better for complex reasoning queries.
+- `TransformersEmbeddingMatcher` (default): Uses Qwen3-VL-Embedding directly via transformers. Downloads model from HuggingFace on first run. Fastest after initial load.
+- `GenerationMatcher`: Uses LM Studio chat completions API. Better for complex reasoning queries.
+- `EmbeddingMatcher`: Uses LM Studio embeddings API (limited support).
