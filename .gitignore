@@ -1,14 +1,29 @@
-# Python-generated files
+# Python
 __pycache__/
 *.py[oc]
 build/
 dist/
 wheels/
 *.egg-info
+.pytest_cache/
 
 # Virtual environments
 .venv
+venv/
+env/
 
-# Output
+# Environment variables
+.env
+
+# System artifacts
+.DS_Store
+Thumbs.db
+
+# Output and Media
 extracted_frames/
+videos/
+*.mp4
+*.mov
+*.avi
+*.mkv
 

@@ -24,10 +24,10 @@ def save_frame(
     """Save a matched frame to disk."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Format: videoname_time_confidence.jpg
+    # Format: videoname_time_confidence.png
     time_str = f"{matched.frame.time_seconds:.3f}".replace(".", "_")
     conf_str = f"{matched.confidence:.2f}".replace(".", "_")
-    filename = f"{video_name}_{time_str}s_conf{conf_str}.jpg"
+    filename = f"{video_name}_{time_str}s_conf{conf_str}.png"
 
     output_path = output_dir / filename
     cv2.imwrite(str(output_path), matched.frame.image)
