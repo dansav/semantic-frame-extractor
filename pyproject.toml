@@ -1,5 +1,5 @@
 [project]
-name = "dynamic-frame-extractor"
+name = "semantic-frame-extractor"
 version = "0.1.0"
 description = "Extract video frames matching a text query using vision LLMs"
 readme = "README.md"

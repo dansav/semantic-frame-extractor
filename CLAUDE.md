@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Dynamic Frame Extractor - Extract video frames matching a text query using vision LLMs (via LM Studio).
+Semantic Frame Extractor - Extract video frames matching a text query using vision LLMs (via LM Studio).
 
 ## Development Setup
 

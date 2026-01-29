@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Dynamic Frame Extractor - Extract video frames matching a text query using vision LLMs.
+Semantic Frame Extractor - Extract video frames matching a text query using vision LLMs.
 
 Usage:
     uv run python main.py "**/*.mp4" "A dark blue car with a gray roof rack"
@@ -13,7 +13,11 @@ from glob import glob
 from pathlib import Path
 
 from extractor import quick_extract, exhaustive_extract
-from extractor.matcher import EmbeddingMatcher, GenerationMatcher, TransformersEmbeddingMatcher
+from extractor.matcher import (
+    EmbeddingMatcher,
+    GenerationMatcher,
+    TransformersEmbeddingMatcher,
+)
 from extractor.modes import save_frame
 
 
@@ -38,31 +42,36 @@ Examples:
         help="Text description of frames to extract",
     )
     parser.add_argument(
-        "--output", "-o",
+        "--output",
+        "-o",
         type=Path,
         default=Path("./extracted_frames"),
         help="Output directory for matched frames (default: ./extracted_frames)",
     )
     parser.add_argument(
-        "--mode", "-m",
+        "--mode",
+        "-m",
         choices=["quick", "exhaustive"],
         default="quick",
         help="Extraction mode: 'quick' samples keyframes, 'exhaustive' captures all matching frames (default: quick)",
     )
     parser.add_argument(
-        "--threshold", "-t",
+        "--threshold",
+        "-t",
         type=float,
         default=0.7,
         help="Confidence threshold 0.0-1.0 (default: 0.7)",
     )
     parser.add_argument(
-        "--interval", "-i",
+        "--interval",
+        "-i",
         type=float,
         default=None,
         help="Sample interval in seconds (default: 2.0 for quick, 1.0 for exhaustive)",
     )
     parser.add_argument(
-        "--batch-size", "-b",
+        "--batch-size",
+        "-b",
         type=int,
         default=5,
         help="Batch size for quick mode (default: 5)",
@@ -99,7 +108,9 @@ def create_matcher(args: argparse.Namespace):
     """Create the appropriate matcher based on arguments."""
     if args.matcher == "transformers":
         model = args.model or "Qwen/Qwen3-VL-Embedding-2B"
-        return TransformersEmbeddingMatcher(model_name=model, max_pixels=args.max_pixels)
+        return TransformersEmbeddingMatcher(
+            model_name=model, max_pixels=args.max_pixels
+        )
     elif args.matcher == "embedding":
         model = args.model or "qwen.qwen3-vl-embedding-2b"
         return EmbeddingMatcher(base_url=args.api_url, model=model)
