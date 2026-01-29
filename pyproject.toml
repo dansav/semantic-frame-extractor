@@ -1,0 +1,13 @@
+[project]
+name = "dynamic-frame-extractor"
+version = "0.1.0"
+description = "Extract video frames matching a text query using vision LLMs"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "opencv-python>=4.9.0",
+    "openai>=1.0.0",
+]
+
+[project.scripts]
+frame-extractor = "main:main"
