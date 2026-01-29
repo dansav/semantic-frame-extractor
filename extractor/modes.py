@@ -107,16 +107,15 @@ def exhaustive_extract(
     matcher: BaseMatcher,
     threshold: float = 0.5,
     sample_interval: float = 1.0,
-    search_margin_seconds: float = 5.0,
     callback: callable = None,
 ) -> Iterator[MatchedFrame]:
     """
     Exhaustive extraction mode - finds all frames in matching segments.
 
-    When a match is detected during sampling:
-    1. Binary search backward to find the first matching frame
-    2. Extract all frames until no longer matching
-    3. Resume sampling from end of segment
+    Optimized algorithm:
+    1. Sample at intervals and check for matches
+    2. If two consecutive samples both match, extract all frames between without querying
+    3. Use binary search only at segment boundaries (match→no-match transitions)
 
     Args:
         video_path: Path to video file
@@ -124,84 +123,106 @@ def exhaustive_extract(
         matcher: Matcher instance to use
         threshold: Minimum confidence to consider a match (0.0-1.0)
         sample_interval: Seconds between samples when scanning
-        search_margin_seconds: How far back to search for segment start
         callback: Optional callback(frame, confidence, is_match) for progress
 
     Yields:
         MatchedFrame for each frame in matching segments
     """
     with VideoReader(video_path) as video:
-        current_time = 0.0
-        processed_up_to_frame = -1  # Track to avoid re-processing frames
+        # First pass: sample at intervals and record which samples match
+        sample_results: list[tuple[Frame, float, bool]] = []
 
-        def is_match(frame: Frame) -> bool:
-            """Helper to check if a frame matches."""
+        for frame in video.sample_frames(interval_seconds=sample_interval):
+            score = matcher.match(frame.image, query)
+            is_match = score >= threshold
+            sample_results.append((frame, score, is_match))
+
+            if callback:
+                callback(frame, score, is_match)
+
+        if not sample_results:
+            return
+
+        def is_match_func(frame: Frame) -> bool:
             score = matcher.match(frame.image, query)
             return score >= threshold
 
-        def get_frame_score(frame: Frame) -> float:
-            """Helper to get confidence score."""
-            return matcher.match(frame.image, query)
+        # Process samples to find segments and extract frames
+        i = 0
+        while i < len(sample_results):
+            frame, score, is_match = sample_results[i]
 
-        while current_time < video.duration:
-            frame = video.get_frame_at_time(current_time)
-            if not frame or frame.frame_number <= processed_up_to_frame:
-                current_time += sample_interval
+            if not is_match:
+                i += 1
                 continue
 
-            score = get_frame_score(frame)
-            is_frame_match = score >= threshold
+            # Found a matching sample - determine segment boundaries
+            segment_start_sample = i
+            segment_end_sample = i
 
-            if callback:
-                callback(frame, score, is_frame_match)
+            # Find how far the matching segment extends
+            while segment_end_sample + 1 < len(sample_results) and sample_results[segment_end_sample + 1][2]:
+                segment_end_sample += 1
 
-            if is_frame_match:
-                # Found a match! Search for segment boundaries
+            # Get frame numbers for the segment boundaries
+            first_sample_frame = sample_results[segment_start_sample][0].frame_number
+            last_sample_frame = sample_results[segment_end_sample][0].frame_number
 
-                # Binary search backward to find segment start
-                search_start_frame = max(
-                    0,
-                    processed_up_to_frame + 1,
-                    video.time_to_frame(current_time - search_margin_seconds),
+            # Binary search to find exact start of segment
+            if segment_start_sample > 0:
+                # Search between previous non-match and this match
+                prev_frame = sample_results[segment_start_sample - 1][0].frame_number
+                exact_start = video.binary_search_first_match(
+                    prev_frame + 1,
+                    first_sample_frame + 1,
+                    is_match_func,
                 )
-                first_match_frame = video.binary_search_first_match(
-                    search_start_frame,
-                    frame.frame_number + 1,
-                    is_match,
-                )
-
-                if first_match_frame is None:
-                    first_match_frame = frame.frame_number
-
-                # Now extract all frames from first match until no longer matching
-                current_frame_num = first_match_frame
-
-                while current_frame_num < video.frame_count:
-                    f = video.get_frame_at_number(current_frame_num)
-                    if not f:
-                        break
-
-                    f_score = get_frame_score(f)
-                    f_is_match = f_score >= threshold
-
-                    if callback and current_frame_num > frame.frame_number:
-                        callback(f, f_score, f_is_match)
-
-                    if f_is_match:
-                        if current_frame_num > processed_up_to_frame:
-                            yield MatchedFrame(
-                                frame=f,
-                                confidence=f_score,
-                                video_path=video_path,
-                            )
-                        current_frame_num += 1
-                    else:
-                        # End of matching segment
-                        break
-
-                # Update position to resume sampling after segment
-                processed_up_to_frame = current_frame_num - 1
-                current_time = video.frame_to_time(current_frame_num) + sample_interval
+                if exact_start is not None:
+                    first_sample_frame = exact_start
             else:
-                # No match, continue sampling
-                current_time += sample_interval
+                # First sample is a match - search from beginning
+                exact_start = video.binary_search_first_match(
+                    0,
+                    first_sample_frame + 1,
+                    is_match_func,
+                )
+                if exact_start is not None:
+                    first_sample_frame = exact_start
+
+            # Binary search to find exact end of segment
+            if segment_end_sample + 1 < len(sample_results):
+                # Search between last match and next non-match
+                next_frame = sample_results[segment_end_sample + 1][0].frame_number
+                exact_end = video.binary_search_last_match(
+                    last_sample_frame,
+                    next_frame,
+                    is_match_func,
+                )
+                if exact_end is not None:
+                    last_sample_frame = exact_end
+            else:
+                # Last sample is a match - search to end of video
+                exact_end = video.binary_search_last_match(
+                    last_sample_frame,
+                    video.frame_count,
+                    is_match_func,
+                )
+                if exact_end is not None:
+                    last_sample_frame = exact_end
+
+            # Extract all frames in the segment WITHOUT querying the matcher
+            for frame_num in range(first_sample_frame, last_sample_frame + 1):
+                f = video.get_frame_at_number(frame_num)
+                if f:
+                    # Use interpolated confidence (we don't query for intermediate frames)
+                    # Just use the average of the boundary samples
+                    avg_confidence = sum(s[1] for s in sample_results[segment_start_sample:segment_end_sample + 1]) / (segment_end_sample - segment_start_sample + 1)
+
+                    yield MatchedFrame(
+                        frame=f,
+                        confidence=avg_confidence,
+                        video_path=video_path,
+                    )
+
+            # Move past this segment
+            i = segment_end_sample + 1
