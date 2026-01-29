@@ -129,16 +129,36 @@ def exhaustive_extract(
         MatchedFrame for each frame in matching segments
     """
     with VideoReader(video_path) as video:
-        # First pass: sample at intervals and record which samples match
+        # First pass: sample at intervals and record which samples match (batched)
         sample_results: list[tuple[Frame, float, bool]] = []
+        batch_frames: list[Frame] = []
+        batch_size = 5
 
         for frame in video.sample_frames(interval_seconds=sample_interval):
-            score = matcher.match(frame.image, query)
-            is_match = score >= threshold
-            sample_results.append((frame, score, is_match))
+            batch_frames.append(frame)
 
-            if callback:
-                callback(frame, score, is_match)
+            if len(batch_frames) >= batch_size:
+                images = [f.image for f in batch_frames]
+                scores = matcher.match_batch(images, query)
+
+                for f, score in zip(batch_frames, scores):
+                    is_match = score >= threshold
+                    sample_results.append((f, score, is_match))
+                    if callback:
+                        callback(f, score, is_match)
+
+                batch_frames = []
+
+        # Process remaining frames in batch
+        if batch_frames:
+            images = [f.image for f in batch_frames]
+            scores = matcher.match_batch(images, query)
+
+            for f, score in zip(batch_frames, scores):
+                is_match = score >= threshold
+                sample_results.append((f, score, is_match))
+                if callback:
+                    callback(f, score, is_match)
 
         if not sample_results:
             return
