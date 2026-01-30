@@ -27,3 +27,5 @@ videos/
 *.avi
 *.mkv
 
+test*.sh
+

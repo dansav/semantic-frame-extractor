@@ -1,10 +1,11 @@
 import base64
+import io
 import re
 from abc import ABC, abstractmethod
 
-import cv2
 import numpy as np
 from openai import OpenAI
+from PIL import Image
 
 
 class BaseMatcher(ABC):
@@ -16,7 +17,7 @@ class BaseMatcher(ABC):
         Check if an image matches the query.
 
         Args:
-            image: BGR image as numpy array (OpenCV format)
+            image: RGB image as numpy array
             query: Text description to match against
 
         Returns:
@@ -30,7 +31,7 @@ class BaseMatcher(ABC):
         Check if multiple images match the query.
 
         Args:
-            images: List of BGR images as numpy arrays
+            images: List of RGB images as numpy arrays
             query: Text description to match against
 
         Returns:
@@ -39,10 +40,12 @@ class BaseMatcher(ABC):
         pass
 
 
-def encode_image_base64(image: np.ndarray, format: str = ".jpg") -> str:
-    """Convert a numpy image array to base64 string."""
-    _, buffer = cv2.imencode(format, image)
-    return base64.b64encode(buffer).decode("utf-8")
+def encode_image_base64(image: np.ndarray) -> str:
+    """Convert an RGB numpy image array to base64 JPEG string."""
+    pil_image = Image.fromarray(image)
+    buffer = io.BytesIO()
+    pil_image.save(buffer, format="JPEG", quality=85)
+    return base64.b64encode(buffer.getvalue()).decode("utf-8")
 
 
 class GenerationMatcher(BaseMatcher):
@@ -265,17 +268,14 @@ class TransformersEmbeddingMatcher(BaseMatcher):
         model_name: str = "Qwen/Qwen3-VL-Embedding-2B",
         max_pixels: int = 1_000_000,
     ):
-        from PIL import Image
         from .vendor.qwen3_vl_embedding import Qwen3VLEmbedder
 
-        self.Image = Image
         self.embedder = Qwen3VLEmbedder(model_name_or_path=model_name, max_pixels=max_pixels)
         self._query_cache: dict[str, np.ndarray] = {}
 
     def _numpy_to_pil(self, image: np.ndarray):
-        """Convert BGR numpy array to PIL Image."""
-        rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        return self.Image.fromarray(rgb)
+        """Convert RGB numpy array to PIL Image."""
+        return Image.fromarray(image)
 
     def _get_text_embedding(self, text: str) -> np.ndarray:
         """Get embedding for text query (cached)."""

@@ -129,7 +129,15 @@ def main():
     args = parse_args()
 
     # Expand glob pattern
-    video_files = sorted(glob(args.pattern, recursive=True))
+    # Handle tilder expansion (e.g. ~) and check for direct file match first
+    # This prevents glob from interpreting characters like [] in filenames as patterns
+    pattern_path = Path(args.pattern).expanduser()
+
+    if pattern_path.is_file():
+        video_files = [str(pattern_path)]
+    else:
+        video_files = sorted(glob(str(pattern_path), recursive=True))
+
     video_files = [Path(f) for f in video_files if Path(f).is_file()]
 
     if not video_files:

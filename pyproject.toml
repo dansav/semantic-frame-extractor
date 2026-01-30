@@ -5,7 +5,7 @@ description = "Extract video frames matching a text query using vision LLMs"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "opencv-python>=4.9.0",
+    "av>=14.0.0",
     "openai>=1.0.0",
     "transformers>=4.57.0",
     "torch>=2.0.0",

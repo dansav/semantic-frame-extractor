@@ -1,29 +1,52 @@
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
-import cv2
+
+import av
 import numpy as np
 
 
 @dataclass
 class Frame:
     """A video frame with its timestamp."""
-    image: np.ndarray
+    image: np.ndarray  # RGB format
     time_seconds: float
     frame_number: int
 
 
 class VideoReader:
-    """Handles video file operations and frame extraction."""
+    """
+    Handles video file operations and frame extraction using PyAV.
+
+    Note: This class is not thread-safe. Create separate instances for
+    concurrent access.
+    """
 
     def __init__(self, path: str | Path):
         self.path = Path(path)
-        self._cap = cv2.VideoCapture(str(self.path))
-        if not self._cap.isOpened():
-            raise ValueError(f"Could not open video: {self.path}")
+        self._container = av.open(str(self.path))
+        self._stream = self._container.streams.video[0]
 
-        self._fps = self._cap.get(cv2.CAP_PROP_FPS)
-        self._frame_count = int(self._cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        # Set thread type for faster decoding
+        self._stream.thread_type = "AUTO"
+
+        self._fps = float(self._stream.average_rate) if self._stream.average_rate else 30.0
+
+        # Frame count may not be available for all containers
+        if self._stream.frames > 0:
+            self._frame_count = self._stream.frames
+        elif self._stream.duration and self._stream.time_base:
+            # Estimate from duration
+            duration_sec = float(self._stream.duration * self._stream.time_base)
+            self._frame_count = int(duration_sec * self._fps)
+        else:
+            # Fallback: estimate from container duration
+            if self._container.duration:
+                duration_sec = self._container.duration / av.time_base
+                self._frame_count = int(duration_sec * self._fps)
+            else:
+                self._frame_count = 0
+
         self._duration = self._frame_count / self._fps if self._fps > 0 else 0
 
     @property
@@ -47,27 +70,46 @@ class VideoReader:
         """Convert frame number to time in seconds."""
         return frame_number / self._fps
 
+    def _seek_to_time(self, time_seconds: float) -> None:
+        """Seek to a specific time in the video."""
+        # Convert to stream time base
+        pts = int(time_seconds / self._stream.time_base)
+        self._container.seek(pts, stream=self._stream, backward=True)
+
+    def _seek_to_frame(self, frame_number: int) -> None:
+        """Seek to a specific frame number."""
+        time_seconds = self.frame_to_time(frame_number)
+        self._seek_to_time(time_seconds)
+
     def get_frame_at_time(self, time_seconds: float) -> Frame | None:
         """Extract a single frame at the specified time."""
-        frame_number = self.time_to_frame(time_seconds)
-        return self.get_frame_at_number(frame_number)
+        if time_seconds < 0 or time_seconds > self._duration:
+            return None
+
+        target_frame = self.time_to_frame(time_seconds)
+        return self.get_frame_at_number(target_frame)
 
     def get_frame_at_number(self, frame_number: int) -> Frame | None:
         """Extract a single frame by frame number."""
-        if frame_number < 0 or frame_number >= self._frame_count:
+        if frame_number < 0 or (self._frame_count > 0 and frame_number >= self._frame_count):
             return None
 
-        self._cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
-        ret, image = self._cap.read()
+        target_time = self.frame_to_time(frame_number)
+        self._seek_to_time(target_time)
 
-        if not ret:
-            return None
+        # Decode frames until we reach or pass the target
+        for frame in self._container.decode(video=0):
+            frame_time = float(frame.pts * self._stream.time_base) if frame.pts else 0
+            current_frame_num = self.time_to_frame(frame_time)
 
-        return Frame(
-            image=image,
-            time_seconds=self.frame_to_time(frame_number),
-            frame_number=frame_number,
-        )
+            if current_frame_num >= frame_number:
+                return Frame(
+                    image=frame.to_ndarray(format='rgb24'),
+                    time_seconds=frame_time,
+                    frame_number=current_frame_num,
+                )
+
+        return None
 
     def sample_frames(self, interval_seconds: float = 1.0) -> Iterator[Frame]:
         """Yield frames at regular intervals."""
@@ -83,7 +125,8 @@ class VideoReader:
     ) -> Iterator[Frame]:
         """Yield all frames in a range."""
         start_frame = max(0, start_frame)
-        end_frame = min(self._frame_count, end_frame)
+        if self._frame_count > 0:
+            end_frame = min(self._frame_count, end_frame)
 
         for frame_number in range(start_frame, end_frame, step):
             frame = self.get_frame_at_number(frame_number)
@@ -94,13 +137,35 @@ class VideoReader:
         """
         Extract keyframes (I-frames) from the video.
 
-        Note: OpenCV doesn't directly expose keyframe detection for all codecs.
-        This implementation samples more densely and could be enhanced with
-        scene change detection or ffprobe for true keyframe extraction.
+        Uses PyAV's frame.key_frame property for true keyframe detection.
         """
-        # Simple approach: sample every 2 seconds as approximate keyframes
-        # For true keyframe extraction, would need ffprobe or similar
-        yield from self.sample_frames(interval_seconds=2.0)
+        # Seek to beginning
+        self._container.seek(0)
+
+        for frame in self._container.decode(video=0):
+            if frame.key_frame:
+                frame_time = float(frame.pts * self._stream.time_base) if frame.pts else 0
+                yield Frame(
+                    image=frame.to_ndarray(format='rgb24'),
+                    time_seconds=frame_time,
+                    frame_number=self.time_to_frame(frame_time),
+                )
+
+    def get_keyframe_timestamps(self) -> list[float]:
+        """
+        Get timestamps of all keyframes without full decoding.
+
+        This is faster than get_keyframes() when you only need timestamps.
+        """
+        timestamps = []
+        self._container.seek(0)
+
+        for packet in self._container.demux(video=0):
+            if packet.is_keyframe and packet.pts is not None:
+                timestamp = float(packet.pts * self._stream.time_base)
+                timestamps.append(timestamp)
+
+        return timestamps
 
     def binary_search_first_match(
         self,
@@ -173,8 +238,8 @@ class VideoReader:
         return result
 
     def close(self):
-        """Release video capture resources."""
-        self._cap.release()
+        """Release video resources."""
+        self._container.close()
 
     def __enter__(self):
         return self

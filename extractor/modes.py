@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 
-import cv2
+from PIL import Image
 
 from .video import VideoReader, Frame
 from .matcher import BaseMatcher
@@ -30,7 +30,8 @@ def save_frame(
     filename = f"{video_name}_{time_str}s_conf{conf_str}.png"
 
     output_path = output_dir / filename
-    cv2.imwrite(str(output_path), matched.frame.image)
+    pil_image = Image.fromarray(matched.frame.image)
+    pil_image.save(str(output_path), format="PNG")
     return output_path
 
 
