@@ -13,15 +13,15 @@ Semantic Frame Extractor - Extract video frames matching a text query using visi
 uv sync
 
 # Run extraction
-uv run python main.py "**/*.mp4" "A dark blue car" --mode quick
-uv run python main.py "clip.mp4" "Person waving" --mode exhaustive --threshold 0.6
+uv run main.py "**/*.mp4" "A dark blue car" --mode quick
+uv run main.py "clip.mp4" "Person waving" --mode exhaustive --threshold 0.6
 ```
 
 Requires LM Studio running locally with a vision embedding model (e.g., `qwen.qwen3-vl-embedding-2b`).
 
 ## Architecture
 
-```
+```text
 main.py                 # CLI entry point
 extractor/
 ├── video.py            # VideoReader: frame extraction, seeking, binary search

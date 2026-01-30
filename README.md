@@ -21,7 +21,7 @@ This project is built with Python 3.12 and uses `uv` for dependency management.
 1. **Clone the repository**
 
    ```bash
-   git clone <your-repo-url>
+   git clone git@github.com:dansav/semantic-frame-extractor.git
    cd semantic-frame-extractor
    ```
 
@@ -35,6 +35,8 @@ This project is built with Python 3.12 and uses `uv` for dependency management.
    uv sync
    ```
 
+  See <https://docs.astral.sh/uv/getting-started/installation/> for other ways to install uv.
+
 ## Usage
 
 The basic syntax is `main.py [VIDEO_PATTERN] [QUERY]`.
@@ -44,7 +46,7 @@ The basic syntax is `main.py [VIDEO_PATTERN] [QUERY]`.
 Best for finding a few examples of an object or event.
 
 ```bash
-uv run python main.py "**/*.mp4" "A golden retriever playing fetch"
+uv run main.py "**/*.mp4" "A golden retriever playing fetch"
 ```
 
 ### Exhaustive Segment Extraction
@@ -52,7 +54,7 @@ uv run python main.py "**/*.mp4" "A golden retriever playing fetch"
 Best for clipping out entire scenes. This finds the exact start/end timestamps and saves every frame in between.
 
 ```bash
-uv run python main.py "vacation.mov" "People swimming in the pool" \
+uv run main.py "vacation.mov" "People swimming in the pool" \
     --mode exhaustive \
     --threshold 0.6
 ```
@@ -63,7 +65,7 @@ uv run python main.py "vacation.mov" "People swimming in the pool" \
 Sample every 0.5 seconds for finer granularity.
 
 ```bash
-uv run python main.py "video.mp4" "cat" --interval 0.5
+uv run main.py "video.mp4" "cat" --interval 0.5
 ```
 
 **Use an OpenAI Compatible Server (e.g. LM Studio, vLLM):**  
@@ -73,13 +75,13 @@ uv run python main.py "video.mp4" "cat" --interval 0.5
 3. Run with the generation matcher:
 
 ```bash
-uv run python main.py "video.mp4" "cat" --matcher generation
+uv run main.py "video.mp4" "cat" --matcher generation
 ```
 
 ## CLI Options
 
 | Flag | Description | Default |
-|------|-------------|---------|
+| ---- | ----------- | ------- |
 | `pattern` | Glob pattern for video files (e.g. `*.mp4`, `**/*.mov`) | Required |
 | `query` | Text description to search for | Required |
 | `--mode`, `-m` | `quick` or `exhaustive` | `quick` |
