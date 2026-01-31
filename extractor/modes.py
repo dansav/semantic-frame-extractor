@@ -43,6 +43,8 @@ def quick_extract(
     sample_interval: float = 2.0,
     batch_size: int = 5,
     callback: callable = None,
+    start_time: float | None = None,
+    end_time: float | None = None,
 ) -> Iterator[MatchedFrame]:
     """
     Quick extraction mode - samples frames at intervals and returns matches.
@@ -55,6 +57,8 @@ def quick_extract(
         sample_interval: Seconds between sampled frames
         batch_size: Number of frames to process in each batch
         callback: Optional callback(frame, confidence, is_match) for progress
+        start_time: Start time in seconds (default: beginning of video)
+        end_time: End time in seconds (default: end of video)
 
     Yields:
         MatchedFrame for each frame above threshold
@@ -62,7 +66,11 @@ def quick_extract(
     with VideoReader(video_path) as video:
         batch_frames: list[Frame] = []
 
-        for frame in video.sample_frames(interval_seconds=sample_interval):
+        for frame in video.sample_frames(
+            interval_seconds=sample_interval,
+            start_time=start_time,
+            end_time=end_time,
+        ):
             batch_frames.append(frame)
 
             if len(batch_frames) >= batch_size:
@@ -109,6 +117,8 @@ def exhaustive_extract(
     threshold: float = 0.5,
     sample_interval: float = 1.0,
     callback: callable = None,
+    start_time: float | None = None,
+    end_time: float | None = None,
 ) -> Iterator[MatchedFrame]:
     """
     Exhaustive extraction mode - finds all frames in matching segments.
@@ -125,6 +135,8 @@ def exhaustive_extract(
         threshold: Minimum confidence to consider a match (0.0-1.0)
         sample_interval: Seconds between samples when scanning
         callback: Optional callback(frame, confidence, is_match) for progress
+        start_time: Start time in seconds (default: beginning of video)
+        end_time: End time in seconds (default: end of video)
 
     Yields:
         MatchedFrame for each frame in matching segments
@@ -135,7 +147,11 @@ def exhaustive_extract(
         batch_frames: list[Frame] = []
         batch_size = 5
 
-        for frame in video.sample_frames(interval_seconds=sample_interval):
+        for frame in video.sample_frames(
+            interval_seconds=sample_interval,
+            start_time=start_time,
+            end_time=end_time,
+        ):
             batch_frames.append(frame)
 
             if len(batch_frames) >= batch_size:

@@ -8,12 +8,71 @@ Usage:
 """
 
 import argparse
+import re
 import sys
 from glob import glob
 from pathlib import Path
 
-from extractor import quick_extract, exhaustive_extract
+from extractor import quick_extract, exhaustive_extract, VideoReader
 from extractor.modes import save_frame
+
+
+def parse_time_value(value: str) -> tuple[str, float]:
+    """
+    Parse a time value that can be either seconds or percentage.
+
+    Args:
+        value: Time string like "53.1s", "53.1", or "75%"
+
+    Returns:
+        Tuple of (type, value) where type is "seconds" or "percent"
+
+    Raises:
+        ValueError: If the format is invalid
+    """
+    value = value.strip()
+
+    if value.endswith("%"):
+        try:
+            percent = float(value[:-1])
+            if not 0 <= percent <= 100:
+                raise ValueError(f"Percentage must be between 0 and 100, got {percent}")
+            return ("percent", percent)
+        except ValueError as e:
+            raise ValueError(f"Invalid percentage format: {value}") from e
+
+    # Remove optional 's' suffix for seconds
+    if value.endswith("s"):
+        value = value[:-1]
+
+    try:
+        seconds = float(value)
+        if seconds < 0:
+            raise ValueError(f"Time cannot be negative, got {seconds}")
+        return ("seconds", seconds)
+    except ValueError as e:
+        raise ValueError(f"Invalid time format: {value}") from e
+
+
+def resolve_time(time_spec: tuple[str, float] | None, duration: float) -> float | None:
+    """
+    Convert a time specification to seconds.
+
+    Args:
+        time_spec: Tuple from parse_time_value(), or None
+        duration: Video duration in seconds
+
+    Returns:
+        Time in seconds, or None if time_spec is None
+    """
+    if time_spec is None:
+        return None
+
+    time_type, value = time_spec
+    if time_type == "percent":
+        return (value / 100.0) * duration
+    else:
+        return value
 
 
 def parse_args() -> argparse.Namespace:
@@ -25,6 +84,8 @@ Examples:
   %(prog)s "videos/*.mp4" "A red sports car"
   %(prog)s "**/*.mp4" "Person holding umbrella" --mode exhaustive
   %(prog)s "clip.mp4" "Cat sleeping" --threshold 0.7 --output ./matches
+  %(prog)s "clip.mp4" "Car" --start 30s --end 120s
+  %(prog)s "clip.mp4" "Car" --start 10%% --end 50%%
         """,
     )
 
@@ -70,6 +131,18 @@ Examples:
         type=int,
         default=5,
         help="Batch size for quick mode (default: 5)",
+    )
+    parser.add_argument(
+        "--start",
+        type=str,
+        default=None,
+        help="Start time: seconds (e.g., '30s' or '30') or percentage (e.g., '10%%')",
+    )
+    parser.add_argument(
+        "--end",
+        type=str,
+        default=None,
+        help="End time: seconds (e.g., '120s' or '120') or percentage (e.g., '75%%')",
     )
 
     # LM Studio configuration
@@ -129,6 +202,14 @@ def progress_callback(frame, confidence, is_match):
 def main():
     args = parse_args()
 
+    # Parse start/end time specifications
+    try:
+        start_spec = parse_time_value(args.start) if args.start else None
+        end_spec = parse_time_value(args.end) if args.end else None
+    except ValueError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+
     # Expand tilde in output path
     output_dir = args.output.expanduser()
 
@@ -172,6 +253,19 @@ def main():
         video_name = video_path.stem
 
         try:
+            # Get video duration to resolve percentage-based times
+            with VideoReader(video_path) as video:
+                duration = video.duration
+
+            start_time = resolve_time(start_spec, duration)
+            end_time = resolve_time(end_spec, duration)
+
+            # Display time range if specified
+            if start_time is not None or end_time is not None:
+                start_str = f"{start_time:.1f}s" if start_time else "0s"
+                end_str = f"{end_time:.1f}s" if end_time else f"{duration:.1f}s"
+                print(f"  Time range: {start_str} - {end_str}")
+
             if args.mode == "quick":
                 matches = quick_extract(
                     video_path=video_path,
@@ -181,6 +275,8 @@ def main():
                     sample_interval=interval,
                     batch_size=args.batch_size,
                     callback=progress_callback,
+                    start_time=start_time,
+                    end_time=end_time,
                 )
             else:
                 matches = exhaustive_extract(
@@ -190,6 +286,8 @@ def main():
                     threshold=args.threshold,
                     sample_interval=interval,
                     callback=progress_callback,
+                    start_time=start_time,
+                    end_time=end_time,
                 )
 
             # Save matched frames
