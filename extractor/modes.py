@@ -5,7 +5,7 @@ from typing import Iterator
 from PIL import Image
 
 from .video import VideoReader, Frame
-from .matcher import BaseMatcher
+from .matchers.base import BaseMatcher
 
 
 @dataclass

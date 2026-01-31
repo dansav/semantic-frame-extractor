@@ -13,11 +13,6 @@ from glob import glob
 from pathlib import Path
 
 from extractor import quick_extract, exhaustive_extract
-from extractor.matcher import (
-    EmbeddingMatcher,
-    GenerationMatcher,
-    TransformersEmbeddingMatcher,
-)
 from extractor.modes import save_frame
 
 
@@ -107,14 +102,20 @@ Examples:
 def create_matcher(args: argparse.Namespace):
     """Create the appropriate matcher based on arguments."""
     if args.matcher == "transformers":
+        from extractor.matchers.transformers_embedding import TransformersEmbeddingMatcher
+
         model = args.model or "Qwen/Qwen3-VL-Embedding-2B"
         return TransformersEmbeddingMatcher(
             model_name=model, max_pixels=args.max_pixels
         )
     elif args.matcher == "embedding":
+        from extractor.matchers.embedding import EmbeddingMatcher
+
         model = args.model or "qwen.qwen3-vl-embedding-2b"
         return EmbeddingMatcher(base_url=args.api_url, model=model)
     else:
+        from extractor.matchers.generation import GenerationMatcher
+
         model = args.model or "qwen/qwen3-vl-4b"
         return GenerationMatcher(base_url=args.api_url, model=model)
 
