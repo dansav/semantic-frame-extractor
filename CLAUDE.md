@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Semantic Frame Extractor - Extract video frames matching a text query using vision LLMs (via LM Studio).
+Semantic Frame Extractor - Extract video frames matching a text query using vision LLMs.
 
 ## Development Setup
 
@@ -17,7 +17,7 @@ uv run main.py "**/*.mp4" "A dark blue car" --mode quick
 uv run main.py "clip.mp4" "Person waving" --mode exhaustive --threshold 0.6
 ```
 
-Requires LM Studio running locally with a vision embedding model (e.g., `qwen.qwen3-vl-embedding-2b`).
+For API-based matchers (generation/embedding), requires an OpenAI-compatible server running locally (e.g., LM Studio, Ollama, vLLM).
 
 ## Architecture
 
@@ -25,7 +25,11 @@ Requires LM Studio running locally with a vision embedding model (e.g., `qwen.qw
 main.py                 # CLI entry point
 extractor/
 ├── video.py            # VideoReader: frame extraction, seeking, binary search
-├── matcher.py          # EmbeddingMatcher/GenerationMatcher: LM Studio integration
+├── matchers/           # Matcher implementations
+│   ├── base.py         # BaseMatcher abstract class
+│   ├── transformers_embedding.py  # Local HuggingFace model
+│   ├── generation.py   # OpenAI-compatible chat API
+│   └── embedding.py    # OpenAI-compatible embeddings API
 └── modes.py            # quick_extract() and exhaustive_extract() algorithms
 ```
 
@@ -38,5 +42,5 @@ extractor/
 ## Matcher Types
 
 - `TransformersEmbeddingMatcher` (default): Uses Qwen3-VL-Embedding directly via transformers. Downloads model from HuggingFace on first run. Fastest after initial load.
-- `GenerationMatcher`: Uses LM Studio chat completions API. Better for complex reasoning queries.
-- `EmbeddingMatcher`: Uses LM Studio embeddings API (limited support).
+- `GenerationMatcher`: Uses OpenAI-compatible chat completions API. Better for complex reasoning queries.
+- `EmbeddingMatcher`: Uses OpenAI-compatible embeddings API (limited support).

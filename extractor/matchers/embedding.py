@@ -16,7 +16,7 @@ class EmbeddingMatcher(BaseMatcher):
         self,
         base_url: str = "http://localhost:1234/v1",
         model: str = "qwen.qwen3-vl-embedding-2b",
-        api_key: str = "lm-studio",
+        api_key: str = "not-needed",
     ):
         self.client = OpenAI(base_url=base_url, api_key=api_key)
         self.model = model
@@ -33,8 +33,8 @@ class EmbeddingMatcher(BaseMatcher):
         """Get embedding for an image."""
         image_b64 = encode_image_base64(image)
 
-        # Note: This API format may need adjustment based on LM Studio's
-        # actual multimodal embedding endpoint
+        # Note: This API format may need adjustment based on the backend's
+        # multimodal embedding endpoint implementation
         response = self.client.embeddings.create(
             model=self.model,
             input=[{"type": "image_url", "image_url": f"data:image/jpeg;base64,{image_b64}"}],

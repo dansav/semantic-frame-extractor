@@ -145,11 +145,11 @@ Examples:
         help="End time: seconds (e.g., '120s' or '120') or percentage (e.g., '75%%')",
     )
 
-    # LM Studio configuration
+    # API configuration (for generation/embedding matchers)
     parser.add_argument(
         "--api-url",
         default="http://localhost:1234/v1",
-        help="LM Studio API URL (default: http://localhost:1234/v1)",
+        help="OpenAI-compatible API URL (default: http://localhost:1234/v1)",
     )
     parser.add_argument(
         "--model",
@@ -160,7 +160,7 @@ Examples:
         "--matcher",
         choices=["transformers", "generation", "embedding"],
         default="transformers",
-        help="Matcher type: 'transformers' (local, fast), 'generation' (LM Studio API), 'embedding' (LM Studio embeddings API) (default: transformers)",
+        help="Matcher type: 'transformers' (local, fast), 'generation' (API chat completions), 'embedding' (API embeddings) (default: transformers)",
     )
     parser.add_argument(
         "--max-pixels",

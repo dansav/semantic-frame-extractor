@@ -1,16 +1,21 @@
 import re
 
 import numpy as np
-from openai import OpenAI
+from openai import OpenAI, APIStatusError
 
 from .base import BaseMatcher, encode_image_base64
+
+
+class ImageProcessingError(Exception):
+    """Raised when the backend fails to process images."""
+    pass
 
 
 class GenerationMatcher(BaseMatcher):
     """
     Matcher using vision LLM generation (chat completions).
 
-    Works with LM Studio's OpenAI-compatible API.
+    Works with any OpenAI-compatible API.
     """
 
     SYSTEM_PROMPT = """You are an image analysis assistant. Your task is to determine if an image matches a given description.
@@ -21,19 +26,22 @@ Analyze the image carefully and respond with ONLY a confidence score between 0 a
 
 Respond with just the number, nothing else."""
 
-    BATCH_SYSTEM_PROMPT = """You are an image analysis assistant. Your task is to determine if each image matches a given description.
+    BATCH_SYSTEM_PROMPT = """You are an image analysis assistant. Evaluate EACH image INDEPENDENTLY to determine if it matches a given description.
 
-Analyze each image carefully and respond with ONLY confidence scores between 0 and 100 for each image, where:
+For each image, respond with a confidence score between 0 and 100:
 - 0 means the described object/scene is definitely NOT present
 - 100 means the described object/scene is definitely present and clearly visible
 
-Respond with just the numbers separated by commas, in the same order as the images. Example: 85,0,42,100"""
+IMPORTANT: If NONE of the images match, respond with all zeros. Do NOT pick a "best match" - only give high scores to images that actually contain what is described.
+
+Respond with just the numbers separated by commas, in the same order as the images.
+Examples: 85,0,42,100 or 0,0,0,0,0 or 0,0,75,0,0"""
 
     def __init__(
         self,
         base_url: str = "http://localhost:1234/v1",
         model: str = "qwen/qwen3-vl-4b",
-        api_key: str = "lm-studio",
+        api_key: str = "not-needed",
     ):
         self.client = OpenAI(base_url=base_url, api_key=api_key)
         self.model = model
@@ -42,27 +50,30 @@ Respond with just the numbers separated by commas, in the same order as the imag
         """Check if a single image matches the query."""
         image_b64 = encode_image_base64(image)
 
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": self.SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"},
-                        },
-                        {
-                            "type": "text",
-                            "text": f"Does this image contain: {query}",
-                        },
-                    ],
-                },
-            ],
-            max_tokens=10,
-            temperature=0.1,
-        )
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": self.SYSTEM_PROMPT},
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"},
+                            },
+                            {
+                                "type": "text",
+                                "text": f"Does this image contain: {query}",
+                            },
+                        ],
+                    },
+                ],
+                max_tokens=10,
+                temperature=0.1,
+            )
+        except APIStatusError as e:
+            self._handle_api_error(e, 1)
 
         return self._parse_score(response.choices[0].message.content)
 
@@ -92,19 +103,41 @@ Respond with just the numbers separated by commas, in the same order as the imag
             }
         )
 
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": self.BATCH_SYSTEM_PROMPT},
-                {"role": "user", "content": content},
-            ],
-            max_tokens=50,
-            temperature=0.1,
-        )
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": self.BATCH_SYSTEM_PROMPT},
+                    {"role": "user", "content": content},
+                ],
+                max_tokens=50,
+                temperature=0.1,
+            )
+        except APIStatusError as e:
+            self._handle_api_error(e, len(images))
 
         return self._parse_batch_scores(
             response.choices[0].message.content, len(images)
         )
+
+    def _handle_api_error(self, error: APIStatusError, batch_size: int) -> None:
+        """Handle API errors with helpful suggestions."""
+        error_body = getattr(error, "body", {}) or {}
+        error_msg = error_body.get("error", str(error))
+
+        if "failed to process image" in str(error_msg).lower():
+            suggestions = [
+                "Try reducing --batch-size (currently {})".format(batch_size),
+                "Increase context length in the LLM backend settings",
+                "Try a smaller image resolution with --max-pixels",
+            ]
+            raise ImageProcessingError(
+                f"Backend failed to process image(s). Suggestions:\n"
+                + "\n".join(f"  - {s}" for s in suggestions)
+            ) from error
+
+        # Re-raise other errors as-is
+        raise
 
     def _parse_score(self, text: str | None) -> float:
         """Parse a single confidence score from LLM response."""
