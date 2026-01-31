@@ -25,17 +25,43 @@ This project is built with Python 3.12 and uses `uv` for dependency management.
    cd semantic-frame-extractor
    ```
 
-2. **Install dependencies**
+2. **Install uv** (if you haven't already)
 
    ```bash
-   # Install uv if you haven't already
    pip install uv
+   ```
 
-   # Sync dependencies
+   See <https://docs.astral.sh/uv/getting-started/installation/> for other installation methods.
+
+3. **Install dependencies**
+
+   ```bash
    uv sync
    ```
 
-  See <https://docs.astral.sh/uv/getting-started/installation/> for other ways to install uv.
+4. **Install PyTorch** (required for local model inference)
+
+   PyTorch requires hardware-specific builds. Run the install script which auto-detects your setup:
+
+   ```bash
+   ./install_pytorch.sh
+   ```
+
+   The script automatically detects and installs PyTorch for:
+   - **ROCm** (AMD GPUs) - including WSL2 support
+   - **CUDA** (NVIDIA GPUs)
+   - **MPS** (Apple Silicon)
+   - **CPU** (fallback)
+
+   You can also specify the backend manually: `./install_pytorch.sh [rocm|cuda|mps|cpu]`
+
+5. **Verify installation**
+
+   ```bash
+   uv run python -c "import torch; print(torch.cuda.is_available())"
+   ```
+
+> **Note**: If you only plan to use the `generation` matcher with a remote API (e.g., LM Studio), you can skip step 4 and 5 as PyTorch is not required.
 
 ## Usage
 
