@@ -122,8 +122,11 @@ Examples: 85,0,42,100 or 0,0,0,0,0 or 0,0,75,0,0"""
 
     def _handle_api_error(self, error: APIStatusError, batch_size: int) -> None:
         """Handle API errors with helpful suggestions."""
-        error_body = getattr(error, "body", {}) or {}
-        error_msg = error_body.get("error", str(error))
+        error_body = getattr(error, "body", None)
+        if isinstance(error_body, dict):
+            error_msg = error_body.get("error", str(error))
+        else:
+            error_msg = str(error_body or error)
 
         if "failed to process image" in str(error_msg).lower():
             suggestions = [
