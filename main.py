@@ -129,8 +129,11 @@ def progress_callback(frame, confidence, is_match):
 def main():
     args = parse_args()
 
+    # Expand tilde in output path
+    output_dir = args.output.expanduser()
+
     # Expand glob pattern
-    # Handle tilder expansion (e.g. ~) and check for direct file match first
+    # Handle tilde expansion (e.g. ~) and check for direct file match first
     # This prevents glob from interpreting characters like [] in filenames as patterns
     pattern_path = Path(args.pattern).expanduser()
 
@@ -149,7 +152,7 @@ def main():
     print(f"Query: {args.query}")
     print(f"Mode: {args.mode}")
     print(f"Threshold: {args.threshold}")
-    print(f"Output: {args.output}")
+    print(f"Output: {output_dir}")
     print(f"Matcher: {args.matcher}")
     print()
 
@@ -192,7 +195,7 @@ def main():
             # Save matched frames
             video_matches = 0
             for matched in matches:
-                output_path = save_frame(matched, args.output, video_name)
+                output_path = save_frame(matched, output_dir, video_name)
                 video_matches += 1
                 print(f"    Saved: {output_path.name}")
 
