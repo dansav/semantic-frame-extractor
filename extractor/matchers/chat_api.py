@@ -11,9 +11,9 @@ class ImageProcessingError(Exception):
     pass
 
 
-class GenerationMatcher(BaseMatcher):
+class ChatApiMatcher(BaseMatcher):
     """
-    Matcher using vision LLM generation (chat completions).
+    Matcher using vision LLM chat completions (chat-api backend).
 
     Works with any OpenAI-compatible API.
     """

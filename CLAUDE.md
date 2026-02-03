@@ -17,7 +17,7 @@ uv run main.py "**/*.mp4" "A dark blue car" --mode quick
 uv run main.py "clip.mp4" "Person waving" --mode exhaustive --threshold 0.6
 ```
 
-For API-based matchers (generation/embedding), requires an OpenAI-compatible server running locally (e.g., LM Studio, Ollama, vLLM).
+For API-based matchers, requires an OpenAI-compatible server running locally (e.g., LM Studio, vLLM).
 
 ## Architecture
 
@@ -28,8 +28,7 @@ extractor/
 ├── matchers/           # Matcher implementations
 │   ├── base.py         # BaseMatcher abstract class
 │   ├── transformers_embedding.py  # Local HuggingFace model
-│   ├── generation.py   # OpenAI-compatible chat API
-│   └── embedding.py    # OpenAI-compatible embeddings API
+│   └── chat_api.py   # OpenAI-compatible chat API
 └── modes.py            # quick_extract() and exhaustive_extract() algorithms
 ```
 
@@ -42,5 +41,4 @@ extractor/
 ## Matcher Types
 
 - `TransformersEmbeddingMatcher` (default): Uses Qwen3-VL-Embedding directly via transformers. Downloads model from HuggingFace on first run. Fastest after initial load.
-- `GenerationMatcher`: Uses OpenAI-compatible chat completions API. Better for complex reasoning queries.
-- `EmbeddingMatcher`: Uses OpenAI-compatible embeddings API (limited support).
+- `ChatApiMatcher`: Uses OpenAI-compatible chat completions API. Better for complex reasoning queries.

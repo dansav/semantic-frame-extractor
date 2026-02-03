@@ -145,7 +145,7 @@ Examples:
         help="End time: seconds (e.g., '120s' or '120') or percentage (e.g., '75%%')",
     )
 
-    # API configuration (for generation/embedding matchers)
+    # API configuration (for chat-api matcher)
     parser.add_argument(
         "--api-url",
         default="http://localhost:1234/v1",
@@ -158,9 +158,9 @@ Examples:
     )
     parser.add_argument(
         "--matcher",
-        choices=["transformers", "generation", "embedding"],
+        choices=["transformers", "chat-api"],
         default="transformers",
-        help="Matcher type: 'transformers' (local, fast), 'generation' (API chat completions), 'embedding' (API embeddings) (default: transformers)",
+        help="Matcher type: 'transformers' (local, fast), 'chat-api' (API chat completions) (default: transformers)",
     )
     parser.add_argument(
         "--max-pixels",
@@ -175,22 +175,29 @@ Examples:
 def create_matcher(args: argparse.Namespace):
     """Create the appropriate matcher based on arguments."""
     if args.matcher == "transformers":
-        from extractor.matchers.transformers_embedding import TransformersEmbeddingMatcher
+        from extractor.matchers.transformers_embedding import (
+            TransformersEmbeddingMatcher,
+        )
 
         model = args.model or "Qwen/Qwen3-VL-Embedding-2B"
         return TransformersEmbeddingMatcher(
             model_name=model, max_pixels=args.max_pixels
         )
-    elif args.matcher == "embedding":
-        from extractor.matchers.embedding import EmbeddingMatcher
-
-        model = args.model or "qwen.qwen3-vl-embedding-2b"
-        return EmbeddingMatcher(base_url=args.api_url, model=model)
+    elif args.matcher == "generation":
+        print(
+            "Note: --matcher generation is deprecated; use --matcher chat-api instead."
+        )
+        matcher = "chat-api"
     else:
-        from extractor.matchers.generation import GenerationMatcher
+        matcher = args.matcher
+
+    if matcher == "chat-api":
+        from extractor.matchers.chat_api import ChatApiMatcher
 
         model = args.model or "qwen/qwen3-vl-4b"
-        return GenerationMatcher(base_url=args.api_url, model=model)
+        return ChatApiMatcher(base_url=args.api_url, model=model)
+
+    raise ValueError(f"Unknown matcher: {args.matcher}")
 
 
 def progress_callback(frame, confidence, is_match):
