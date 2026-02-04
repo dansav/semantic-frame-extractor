@@ -8,13 +8,13 @@ Usage:
 """
 
 import argparse
-import re
 import sys
 from glob import glob
 from pathlib import Path
 
 from extractor import quick_extract, exhaustive_extract, VideoReader
 from extractor.modes import save_frame
+from extractor.tui import ExtractionProgress
 
 
 def parse_time_value(value: str) -> tuple[str, float]:
@@ -168,6 +168,11 @@ Examples:
         default=1_000_000,
         help="Max pixels for image resizing during matching (default: 1000000 = 1MP). Lower = faster but less accurate.",
     )
+    parser.add_argument(
+        "--no-tui",
+        action="store_true",
+        help="Disable TUI progress display (use plain text output)",
+    )
 
     return parser.parse_args()
 
@@ -201,41 +206,87 @@ def create_matcher(args: argparse.Namespace):
 
 
 def progress_callback(frame, confidence, is_match):
-    """Print progress during extraction."""
+    """Print progress during extraction (plain text mode)."""
     status = "MATCH" if is_match else "     "
     print(f"  [{status}] {frame.time_seconds:7.2f}s  conf={confidence:.3f}")
 
 
-def main():
-    args = parse_args()
+def estimate_frames(duration: float, interval: float, start_time: float | None, end_time: float | None) -> int:
+    """Estimate number of frames to be sampled."""
+    start = start_time if start_time is not None else 0.0
+    end = end_time if end_time is not None else duration
+    return max(1, int((end - start) / interval))
 
-    # Parse start/end time specifications
-    try:
-        start_spec = parse_time_value(args.start) if args.start else None
-        end_spec = parse_time_value(args.end) if args.end else None
-    except ValueError as e:
-        print(f"Error: {e}")
-        sys.exit(1)
 
-    # Expand tilde in output path
-    output_dir = args.output.expanduser()
+def main_with_tui(args, video_files, output_dir, interval, start_spec, end_spec):
+    """Main extraction loop with TUI progress display."""
+    matcher = create_matcher(args)
 
-    # Expand glob pattern
-    # Handle tilde expansion (e.g. ~) and check for direct file match first
-    # This prevents glob from interpreting characters like [] in filenames as patterns
-    pattern_path = Path(args.pattern).expanduser()
+    with ExtractionProgress(
+        video_files=video_files,
+        query=args.query,
+        mode=args.mode,
+        threshold=args.threshold,
+        matcher_type=args.matcher,
+    ) as progress:
+        for video_path in video_files:
+            video_name = video_path.stem
 
-    if pattern_path.is_file():
-        video_files = [str(pattern_path)]
-    else:
-        video_files = sorted(glob(str(pattern_path), recursive=True))
+            try:
+                # Get video metadata
+                with VideoReader(video_path) as video:
+                    duration = video.duration
 
-    video_files = [Path(f) for f in video_files if Path(f).is_file()]
+                start_time = resolve_time(start_spec, duration)
+                end_time = resolve_time(end_spec, duration)
+                estimated_frames = estimate_frames(duration, interval, start_time, end_time)
 
-    if not video_files:
-        print(f"Error: No video files found matching pattern: {args.pattern}")
-        sys.exit(1)
+                # Start video progress
+                progress.start_video(video_path, duration, estimated_frames)
 
+                # Create callback that updates TUI
+                def tui_callback(frame, confidence, is_match):
+                    progress.update(confidence, is_match)
+
+                if args.mode == "quick":
+                    matches = quick_extract(
+                        video_path=video_path,
+                        query=args.query,
+                        matcher=matcher,
+                        threshold=args.threshold,
+                        sample_interval=interval,
+                        batch_size=args.batch_size,
+                        callback=tui_callback,
+                        start_time=start_time,
+                        end_time=end_time,
+                    )
+                else:
+                    matches = exhaustive_extract(
+                        video_path=video_path,
+                        query=args.query,
+                        matcher=matcher,
+                        threshold=args.threshold,
+                        sample_interval=interval,
+                        callback=tui_callback,
+                        start_time=start_time,
+                        end_time=end_time,
+                    )
+
+                # Save matched frames
+                for matched in matches:
+                    output_path = save_frame(matched, output_dir, video_name)
+                    progress.log_saved_frame(output_path, matched.confidence)
+
+                progress.finish_video()
+
+            except Exception as e:
+                progress.console.print(f"[red]Error processing {video_path}: {e}[/red]")
+                progress.finish_video()
+                continue
+
+
+def main_plain(args, video_files, output_dir, interval, start_spec, end_spec):
+    """Main extraction loop with plain text output."""
     print(f"Found {len(video_files)} video file(s)")
     print(f"Query: {args.query}")
     print(f"Mode: {args.mode}")
@@ -244,15 +295,7 @@ def main():
     print(f"Matcher: {args.matcher}")
     print()
 
-    # Create matcher
     matcher = create_matcher(args)
-
-    # Determine sample interval
-    if args.interval is not None:
-        interval = args.interval
-    else:
-        interval = 2.0 if args.mode == "quick" else 1.0
-
     total_matches = 0
 
     for video_path in video_files:
@@ -260,14 +303,12 @@ def main():
         video_name = video_path.stem
 
         try:
-            # Get video duration to resolve percentage-based times
             with VideoReader(video_path) as video:
                 duration = video.duration
 
             start_time = resolve_time(start_spec, duration)
             end_time = resolve_time(end_spec, duration)
 
-            # Display time range if specified
             if start_time is not None or end_time is not None:
                 start_str = f"{start_time:.1f}s" if start_time else "0s"
                 end_str = f"{end_time:.1f}s" if end_time else f"{duration:.1f}s"
@@ -297,7 +338,6 @@ def main():
                     end_time=end_time,
                 )
 
-            # Save matched frames
             video_matches = 0
             for matched in matches:
                 output_path = save_frame(matched, output_dir, video_name)
@@ -314,6 +354,47 @@ def main():
         print()
 
     print(f"Total: {total_matches} frame(s) extracted from {len(video_files)} video(s)")
+
+
+def main():
+    args = parse_args()
+
+    # Parse start/end time specifications
+    try:
+        start_spec = parse_time_value(args.start) if args.start else None
+        end_spec = parse_time_value(args.end) if args.end else None
+    except ValueError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+
+    # Expand tilde in output path
+    output_dir = args.output.expanduser()
+
+    # Expand glob pattern
+    pattern_path = Path(args.pattern).expanduser()
+
+    if pattern_path.is_file():
+        video_files = [str(pattern_path)]
+    else:
+        video_files = sorted(glob(str(pattern_path), recursive=True))
+
+    video_files = [Path(f) for f in video_files if Path(f).is_file()]
+
+    if not video_files:
+        print(f"Error: No video files found matching pattern: {args.pattern}")
+        sys.exit(1)
+
+    # Determine sample interval
+    if args.interval is not None:
+        interval = args.interval
+    else:
+        interval = 2.0 if args.mode == "quick" else 1.0
+
+    # Run with TUI or plain output
+    if args.no_tui:
+        main_plain(args, video_files, output_dir, interval, start_spec, end_spec)
+    else:
+        main_with_tui(args, video_files, output_dir, interval, start_spec, end_spec)
 
 
 if __name__ == "__main__":
