@@ -14,7 +14,7 @@ from pathlib import Path
 
 from extractor import quick_extract, exhaustive_extract, VideoReader
 from extractor.modes import save_frame
-from extractor.tui import ExtractionProgress
+from extractor.tui import ExtractionProgress, ExhaustiveProgress
 
 
 def parse_time_value(value: str) -> tuple[str, float]:
@@ -211,7 +211,9 @@ def progress_callback(frame, confidence, is_match):
     print(f"  [{status}] {frame.time_seconds:7.2f}s  conf={confidence:.3f}")
 
 
-def estimate_frames(duration: float, interval: float, start_time: float | None, end_time: float | None) -> int:
+def estimate_frames(
+    duration: float, interval: float, start_time: float | None, end_time: float | None
+) -> int:
     """Estimate number of frames to be sampled."""
     start = start_time if start_time is not None else 0.0
     end = end_time if end_time is not None else duration
@@ -222,13 +224,27 @@ def main_with_tui(args, video_files, output_dir, interval, start_spec, end_spec)
     """Main extraction loop with TUI progress display."""
     matcher = create_matcher(args)
 
-    with ExtractionProgress(
-        video_files=video_files,
-        query=args.query,
-        mode=args.mode,
-        threshold=args.threshold,
-        matcher_type=args.matcher,
-    ) as progress:
+    # Choose progress class based on mode
+    if args.mode == "exhaustive":
+        progress_ctx = ExhaustiveProgress(
+            video_files=video_files,
+            query=args.query,
+            threshold=args.threshold,
+            matcher_type=args.matcher,
+            interval=interval,
+            start_time_str=args.start,
+            end_time_str=args.end,
+        )
+    else:
+        progress_ctx = ExtractionProgress(
+            video_files=video_files,
+            query=args.query,
+            mode=args.mode,
+            threshold=args.threshold,
+            matcher_type=args.matcher,
+        )
+
+    with progress_ctx as progress:
         for video_path in video_files:
             video_name = video_path.stem
 
@@ -239,7 +255,9 @@ def main_with_tui(args, video_files, output_dir, interval, start_spec, end_spec)
 
                 start_time = resolve_time(start_spec, duration)
                 end_time = resolve_time(end_spec, duration)
-                estimated_frames = estimate_frames(duration, interval, start_time, end_time)
+                estimated_frames = estimate_frames(
+                    duration, interval, start_time, end_time
+                )
 
                 # Start video progress
                 progress.start_video(video_path, duration, estimated_frames)
@@ -261,6 +279,10 @@ def main_with_tui(args, video_files, output_dir, interval, start_spec, end_spec)
                         end_time=end_time,
                     )
                 else:
+                    # Exhaustive mode: wire up phase_callback
+                    def phase_cb(phase, current, total):
+                        progress.update_phase(phase, current, total)
+
                     matches = exhaustive_extract(
                         video_path=video_path,
                         query=args.query,
@@ -268,6 +290,7 @@ def main_with_tui(args, video_files, output_dir, interval, start_spec, end_spec)
                         threshold=args.threshold,
                         sample_interval=interval,
                         callback=tui_callback,
+                        phase_callback=phase_cb,
                         start_time=start_time,
                         end_time=end_time,
                     )

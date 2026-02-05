@@ -11,6 +11,7 @@ from .matchers.base import BaseMatcher
 @dataclass
 class MatchedFrame:
     """A frame that matched the query."""
+
     frame: Frame
     confidence: float
     video_path: Path
@@ -110,6 +111,34 @@ def quick_extract(
                     )
 
 
+def _identify_segments(
+    sample_results: list[tuple[Frame, float, bool]],
+) -> list[tuple[int, int]]:
+    """
+    Find runs of consecutive matching samples.
+
+    Returns:
+        List of (start_sample_index, end_sample_index) tuples into sample_results.
+    """
+    segments = []
+    i = 0
+    while i < len(sample_results):
+        _, _, is_match = sample_results[i]
+        if not is_match:
+            i += 1
+            continue
+
+        start = i
+        end = i
+        while end + 1 < len(sample_results) and sample_results[end + 1][2]:
+            end += 1
+
+        segments.append((start, end))
+        i = end + 1
+
+    return segments
+
+
 def exhaustive_extract(
     video_path: Path,
     query: str,
@@ -117,16 +146,17 @@ def exhaustive_extract(
     threshold: float = 0.5,
     sample_interval: float = 1.0,
     callback: callable = None,
+    phase_callback: callable = None,
     start_time: float | None = None,
     end_time: float | None = None,
 ) -> Iterator[MatchedFrame]:
     """
     Exhaustive extraction mode - finds all frames in matching segments.
 
-    Optimized algorithm:
-    1. Sample at intervals and check for matches
-    2. If two consecutive samples both match, extract all frames between without querying
-    3. Use binary search only at segment boundaries (match→no-match transitions)
+    Three-phase algorithm:
+    1. Scanning: Sample at intervals, batch-check for matches
+    2. Refining: Binary search at segment boundaries for exact start/end frames
+    3. Extracting: Extract every frame within refined segment boundaries
 
     Args:
         video_path: Path to video file
@@ -134,7 +164,9 @@ def exhaustive_extract(
         matcher: Matcher instance to use
         threshold: Minimum confidence to consider a match (0.0-1.0)
         sample_interval: Seconds between samples when scanning
-        callback: Optional callback(frame, confidence, is_match) for progress
+        callback: Optional callback(frame, confidence, is_match) for scanning progress
+        phase_callback: Optional callback(phase, current, total) for phase transitions
+            Phases: "scan_complete", "refining", "refine_complete", "extracting"
         start_time: Start time in seconds (default: beginning of video)
         end_time: End time in seconds (default: end of video)
 
@@ -142,7 +174,12 @@ def exhaustive_extract(
         MatchedFrame for each frame in matching segments
     """
     with VideoReader(video_path) as video:
-        # First pass: sample at intervals and record which samples match (batched)
+        # Convert start/end times to frame bounds for clamping
+        start_frame_bound = video.time_to_frame(start_time) if start_time is not None else 0
+        end_frame_bound = video.time_to_frame(end_time) if end_time is not None else video.frame_count
+
+        # === PHASE 1: SCANNING ===
+        # Sample at intervals and record which samples match (batched)
         sample_results: list[tuple[Frame, float, bool]] = []
         batch_frames: list[Frame] = []
         batch_size = 5
@@ -180,35 +217,32 @@ def exhaustive_extract(
         if not sample_results:
             return
 
+        # Identify matching segments from scan results
+        segments = _identify_segments(sample_results)
+
+        if phase_callback:
+            phase_callback("scan_complete", len(segments), len(segments))
+
+        if not segments:
+            return
+
+        # === PHASE 2: REFINING ===
+        # Binary search to find exact boundaries for each segment
         def is_match_func(frame: Frame) -> bool:
             score = matcher.match(frame.image, query)
             return score >= threshold
 
-        # Process samples to find segments and extract frames
-        i = 0
-        while i < len(sample_results):
-            frame, score, is_match = sample_results[i]
+        refined_segments: list[
+            tuple[int, int, float]
+        ] = []  # (start_frame, end_frame, avg_conf)
 
-            if not is_match:
-                i += 1
-                continue
-
-            # Found a matching sample - determine segment boundaries
-            segment_start_sample = i
-            segment_end_sample = i
-
-            # Find how far the matching segment extends
-            while segment_end_sample + 1 < len(sample_results) and sample_results[segment_end_sample + 1][2]:
-                segment_end_sample += 1
-
-            # Get frame numbers for the segment boundaries
-            first_sample_frame = sample_results[segment_start_sample][0].frame_number
-            last_sample_frame = sample_results[segment_end_sample][0].frame_number
+        for seg_idx, (seg_start, seg_end) in enumerate(segments):
+            first_sample_frame = sample_results[seg_start][0].frame_number
+            last_sample_frame = sample_results[seg_end][0].frame_number
 
             # Binary search to find exact start of segment
-            if segment_start_sample > 0:
-                # Search between previous non-match and this match
-                prev_frame = sample_results[segment_start_sample - 1][0].frame_number
+            if seg_start > 0:
+                prev_frame = sample_results[seg_start - 1][0].frame_number
                 exact_start = video.binary_search_first_match(
                     prev_frame + 1,
                     first_sample_frame + 1,
@@ -217,9 +251,8 @@ def exhaustive_extract(
                 if exact_start is not None:
                     first_sample_frame = exact_start
             else:
-                # First sample is a match - search from beginning
                 exact_start = video.binary_search_first_match(
-                    0,
+                    start_frame_bound,
                     first_sample_frame + 1,
                     is_match_func,
                 )
@@ -227,9 +260,8 @@ def exhaustive_extract(
                     first_sample_frame = exact_start
 
             # Binary search to find exact end of segment
-            if segment_end_sample + 1 < len(sample_results):
-                # Search between last match and next non-match
-                next_frame = sample_results[segment_end_sample + 1][0].frame_number
+            if seg_end + 1 < len(sample_results):
+                next_frame = sample_results[seg_end + 1][0].frame_number
                 exact_end = video.binary_search_last_match(
                     last_sample_frame,
                     next_frame,
@@ -238,22 +270,52 @@ def exhaustive_extract(
                 if exact_end is not None:
                     last_sample_frame = exact_end
             else:
-                # Last sample is a match - search to end of video
                 exact_end = video.binary_search_last_match(
                     last_sample_frame,
-                    video.frame_count,
+                    end_frame_bound,
                     is_match_func,
                 )
                 if exact_end is not None:
                     last_sample_frame = exact_end
 
-            # Extract all frames in the segment WITHOUT querying the matcher
-            for frame_num in range(first_sample_frame, last_sample_frame + 1):
+            avg_confidence = sum(
+                s[1] for s in sample_results[seg_start : seg_end + 1]
+            ) / (seg_end - seg_start + 1)
+
+            refined_segments.append(
+                (first_sample_frame, last_sample_frame, avg_confidence)
+            )
+
+            if phase_callback:
+                phase_callback("refining", seg_idx + 1, len(segments))
+
+        # Calculate total frames to extract across all segments (clamped to bounds)
+        total_extract_frames = sum(
+            min(end_frame_bound - 1, end) - max(start_frame_bound, start) + 1
+            for start, end, _ in refined_segments
+        )
+
+        if phase_callback:
+            phase_callback(
+                "refine_complete", total_extract_frames, total_extract_frames
+            )
+
+        # === PHASE 3: EXTRACTING ===
+        # Extract all frames in refined segments WITHOUT querying the matcher
+        extracted_count = 0
+
+        for start_frame, end_frame, avg_confidence in refined_segments:
+            clamped_start = max(start_frame_bound, start_frame)
+            clamped_end = min(end_frame_bound - 1, end_frame)
+            for frame_num in range(clamped_start, clamped_end + 1):
                 f = video.get_frame_at_number(frame_num)
                 if f:
-                    # Use interpolated confidence (we don't query for intermediate frames)
-                    # Just use the average of the boundary samples
-                    avg_confidence = sum(s[1] for s in sample_results[segment_start_sample:segment_end_sample + 1]) / (segment_end_sample - segment_start_sample + 1)
+                    extracted_count += 1
+
+                    if phase_callback and extracted_count % 10 == 0:
+                        phase_callback(
+                            "extracting", extracted_count, total_extract_frames
+                        )
 
                     yield MatchedFrame(
                         frame=f,
@@ -261,5 +323,6 @@ def exhaustive_extract(
                         video_path=video_path,
                     )
 
-            # Move past this segment
-            i = segment_end_sample + 1
+        # Final extracting callback to ensure we reach 100%
+        if phase_callback and extracted_count > 0:
+            phase_callback("extracting", extracted_count, total_extract_frames)
