@@ -174,6 +174,10 @@ def exhaustive_extract(
         MatchedFrame for each frame in matching segments
     """
     with VideoReader(video_path) as video:
+        # Convert start/end times to frame bounds for clamping
+        start_frame_bound = video.time_to_frame(start_time) if start_time is not None else 0
+        end_frame_bound = video.time_to_frame(end_time) if end_time is not None else video.frame_count
+
         # === PHASE 1: SCANNING ===
         # Sample at intervals and record which samples match (batched)
         sample_results: list[tuple[Frame, float, bool]] = []
@@ -248,7 +252,7 @@ def exhaustive_extract(
                     first_sample_frame = exact_start
             else:
                 exact_start = video.binary_search_first_match(
-                    0,
+                    start_frame_bound,
                     first_sample_frame + 1,
                     is_match_func,
                 )
@@ -268,7 +272,7 @@ def exhaustive_extract(
             else:
                 exact_end = video.binary_search_last_match(
                     last_sample_frame,
-                    video.frame_count,
+                    end_frame_bound,
                     is_match_func,
                 )
                 if exact_end is not None:
@@ -285,9 +289,10 @@ def exhaustive_extract(
             if phase_callback:
                 phase_callback("refining", seg_idx + 1, len(segments))
 
-        # Calculate total frames to extract across all segments
+        # Calculate total frames to extract across all segments (clamped to bounds)
         total_extract_frames = sum(
-            end - start + 1 for start, end, _ in refined_segments
+            min(end_frame_bound - 1, end) - max(start_frame_bound, start) + 1
+            for start, end, _ in refined_segments
         )
 
         if phase_callback:
@@ -300,7 +305,9 @@ def exhaustive_extract(
         extracted_count = 0
 
         for start_frame, end_frame, avg_confidence in refined_segments:
-            for frame_num in range(start_frame, end_frame + 1):
+            clamped_start = max(start_frame_bound, start_frame)
+            clamped_end = min(end_frame_bound - 1, end_frame)
+            for frame_num in range(clamped_start, clamped_end + 1):
                 f = video.get_frame_at_number(frame_num)
                 if f:
                     extracted_count += 1

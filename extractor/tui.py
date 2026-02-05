@@ -105,6 +105,28 @@ class ExtractionStats:
 # ---------------------------------------------------------------------------
 
 
+class PhaseSpinnerColumn(ProgressColumn):
+    """Spinner that only renders for active (started, not finished) tasks."""
+
+    def __init__(self, spinner_name: str = "dots", finished_text: str = "✓"):
+        super().__init__()
+        self._spinner_name = spinner_name
+        self._finished_text = finished_text
+        self._spinners: dict[int, object] = {}
+
+    def render(self, task: Task) -> RenderableType:
+        if task.finished:
+            return Text(self._finished_text, style="green bold")
+        if not task.started:
+            return Text("  ")  # blank placeholder, same width as spinner
+        # Active task — render spinner
+        if task.id not in self._spinners:
+            from rich.spinner import Spinner
+
+            self._spinners[task.id] = Spinner(self._spinner_name)
+        return self._spinners[task.id]
+
+
 class MatchAwareBarColumn(ProgressColumn):
     """
     A progress bar that shows matches as green segments and non-matches as default color.
@@ -578,14 +600,18 @@ class ExhaustiveProgress:
 
     Layout while running:
         ✓ video1.mp4  2 segments, 120 frames extracted, 8.3s
-        ⠋ Overall (video2.mp4)   [━━━━━━━━━━━░░░░░░░░]  55%          0:05:00
-        ⠋   Scanning             [━━green━━━red━━━━━━━] 100%  Done    0:03:12
-        ⠋   Refining             [━━━━━━━━░░░░░░░░░░░░]  40%  4/10   0:01:48
-            Extracting           [░░░░░░░░░░░░░░░░░░░░]   0%  waiting
+          video2.mp4
+        ✓   Scanning             [━━green━━━red━━━━━━━] 100%  Done        0:03:12
+        ⠋   Refining             [━━━━━━━━░░░░░░░░░░░░]  40%  4/10       0:01:48
+            Extracting           [░░░░░░░░░░░░░░░░░░░░]   0%  waiting    -:--:--
           video3.mp4  (dimmed, pending)
-        ┌─ Statistics ───────────────────────────────────────┐
-        │  Phase: Refining   Segments: 10   Threshold: 0.70 │
-        └───────────────────────────────────────────────────-┘
+        ┌─ Statistics ───────────────────────────────────────────┐
+        │  Overall: 55%                Videos: 1/3  5:00        │
+        │  Phase: Refining             Segments: 10             │
+        │  Matches: 42                 Frames: 1200             │
+        │  Last conf: 0.823            Threshold: 0.70          │
+        │  Speed: 12.5 frames/s        Mode: exhaustive         │
+        └───────────────────────────────────────────────────────┘
     """
 
     _PHASE_LABELS = {
@@ -627,7 +653,7 @@ class ExhaustiveProgress:
 
         # Single Progress widget — all tasks share columns → perfect alignment
         self._progress = Progress(
-            SpinnerColumn(),
+            PhaseSpinnerColumn(),
             TextColumn("{task.description}", justify="left"),
             MatchAwareBarColumn(console=self.console, bar_width=40),
             TaskProgressColumn(),
@@ -637,7 +663,6 @@ class ExhaustiveProgress:
             expand=True,
         )
 
-        self._overall_task = None
         self._scan_task = None
         self._refine_task = None
         self._extract_task = None
@@ -646,10 +671,12 @@ class ExhaustiveProgress:
         self._completed_texts: list[Text] = []
         self._current_video_index: int = -1
 
-        # For weighted overall progress
+        # For weighted overall progress (tracked in instance vars, not a Progress task)
         self._scan_total: int = 0
         self._refine_total: int = 0
         self._extract_total: int = 0
+        self._overall_completed: int = 0
+        self._overall_total: int = 0
 
     # ----- overall progress helpers -----
 
@@ -661,9 +688,6 @@ class ExhaustiveProgress:
         self, scan_done: int = 0, refine_done: int = 0, extract_done: int = 0
     ) -> None:
         """Recompute overall progress from phase completion fractions."""
-        if self._overall_task is None:
-            return
-
         scan_frac = (scan_done / self._scan_total) if self._scan_total > 0 else 0
         refine_frac = (
             (refine_done / self._refine_total) if self._refine_total > 0 else 0
@@ -677,10 +701,7 @@ class ExhaustiveProgress:
             + refine_frac * self._W_REFINE
             + extract_frac * self._W_EXTRACT
         )
-        self._progress.update(
-            self._overall_task,
-            completed=self._video_base() + int(weighted),
-        )
+        self._overall_completed = self._video_base() + int(weighted)
 
     # ----- display composition -----
 
@@ -690,6 +711,19 @@ class ExhaustiveProgress:
         grid.add_column(style="white")
         grid.add_column(style="cyan", justify="right")
         grid.add_column(style="white")
+
+        # Overall progress row
+        n = len(self.video_files)
+        done = self._current_video_index + 1
+        pct = int(self._overall_completed / self._overall_total * 100) if self._overall_total > 0 else 0
+        elapsed = self.stats.elapsed_time
+        elapsed_str = f"{int(elapsed // 60)}:{int(elapsed % 60):02d}"
+        grid.add_row(
+            "Overall:",
+            Text(f"{pct}%", style="bold blue"),
+            "Videos:",
+            f"{done}/{n}  {elapsed_str}",
+        )
 
         total_frames, total_matches = self._get_current_totals()
         match_style = "green bold" if self._last_was_match else "white"
@@ -719,7 +753,6 @@ class ExhaustiveProgress:
             f"{self.stats.threshold:.2f}",
         )
         if total_frames > 0:
-            elapsed = self.stats.elapsed_time
             fps = total_frames / elapsed if elapsed > 0 else 0.0
             grid.add_row("Speed:", f"{fps:.1f} frames/s", "Mode:", "exhaustive")
 
@@ -737,15 +770,15 @@ class ExhaustiveProgress:
         # Active video name (separate line above progress)
         if self._scan_task is not None and self._current_video_stats:
             name = _truncate_name(self._current_video_stats.path.name)
-            parts.append(Text(f"  {name}", style="cyan bold"))
+            parts.append(Text(f"    {name}", style="cyan bold"))
 
-        # Single progress widget: Overall + Scanning + Refining + Extracting
+        # Single progress widget: Scanning + Refining + Extracting
         parts.append(self._progress)
 
         # Pending videos
         for i in range(self._current_video_index + 1, len(self.video_files)):
             name = _truncate_name(self.video_files[i].name)
-            parts.append(Text(f"  {name}", style="dim"))
+            parts.append(Text(f"    {name}", style="dim"))
 
         if self._is_running:
             parts.append(self._make_stats_panel())
@@ -764,13 +797,8 @@ class ExhaustiveProgress:
 
     def __enter__(self):
         n = len(self.video_files)
-        self._overall_task = self._progress.add_task(
-            "[bold blue]Overall[/bold blue]",
-            total=n * 100,
-            match_set=set(),
-            total_frames=n * 100,
-            status_text=f"0/{n} videos",
-        )
+        self._overall_total = n * 100
+        self._overall_completed = 0
 
         self._live = Live(
             self._make_display(),
@@ -882,7 +910,7 @@ class ExhaustiveProgress:
 
             # Mark scanning as done
             if self._scan_task is not None:
-                scan_total = self._progress.tasks[self._scan_task].total or 0
+                scan_total = self._scan_total
                 seg_text = f"[green]Done[/green] ({segments} segment{'s' if segments != 1 else ''})"
                 self._progress.update(
                     self._scan_task,
@@ -933,7 +961,7 @@ class ExhaustiveProgress:
 
             # Mark refining as done
             if self._refine_task is not None:
-                ref_total = self._progress.tasks[self._refine_task].total or 0
+                ref_total = self._refine_total
                 self._progress.update(
                     self._refine_task,
                     completed=ref_total,
@@ -996,7 +1024,7 @@ class ExhaustiveProgress:
 
         # Mark extracting as done
         if self._extract_task is not None:
-            ext_total = self._progress.tasks[self._extract_task].total or 0
+            ext_total = self._extract_total
             if ext_total > 0:
                 self._progress.update(
                     self._extract_task,
@@ -1006,14 +1034,7 @@ class ExhaustiveProgress:
                 )
 
         # Snap overall to exact video boundary
-        if self._overall_task is not None:
-            done = self._current_video_index + 1
-            n = len(self.video_files)
-            self._progress.update(
-                self._overall_task,
-                completed=done * 100,
-                status_text=f"{done}/{n} videos",
-            )
+        self._overall_completed = (self._current_video_index + 1) * 100
 
         # Remove phase tasks from widget
         for task_id in (self._scan_task, self._refine_task, self._extract_task):
