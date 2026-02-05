@@ -2,6 +2,7 @@
 TUI (Text User Interface) components using Rich.
 
 Provides progress bars, live statistics, and summary tables for video extraction.
+Includes QuickProgress for quick mode and ExhaustiveProgress for exhaustive mode.
 """
 
 import time
@@ -25,6 +26,11 @@ from rich.table import Table
 from rich.text import Text
 
 
+# ---------------------------------------------------------------------------
+# Data classes (shared between Quick and Exhaustive)
+# ---------------------------------------------------------------------------
+
+
 @dataclass
 class VideoStats:
     """Statistics for a single video."""
@@ -38,6 +44,9 @@ class VideoStats:
     confidences: list[float] = field(default_factory=list)
     # Track which frame indices were matches for the timeline
     match_indices: list[int] = field(default_factory=list)
+    # Exhaustive-mode extras
+    segments_found: int = 0
+    frames_extracted: int = 0
 
     @property
     def match_rate(self) -> float:
@@ -91,15 +100,21 @@ class ExtractionStats:
         return self.total_frames / self.elapsed_time
 
 
+# ---------------------------------------------------------------------------
+# Custom Rich columns
+# ---------------------------------------------------------------------------
+
+
 class MatchAwareBarColumn(ProgressColumn):
     """
     A progress bar that shows matches as green segments and non-matches as default color.
     Expands to fill available space.
     """
 
-    def __init__(self, console: Console | None = None):
+    def __init__(self, console: Console | None = None, bar_width: int | None = None):
         super().__init__()
         self._console = console
+        self._fixed_width = bar_width
 
     def render(self, task: Task) -> RenderableType:
         """Render the progress bar with match highlighting."""
@@ -111,9 +126,11 @@ class MatchAwareBarColumn(ProgressColumn):
         total_frames: int = task.fields.get("total_frames", int(total))
 
         # Calculate bar width based on terminal width
-        # Reserve space for: spinner(2) + description(55) + percentage(5) + elapsed(8) + remaining(8) + padding(12)
-        terminal_width = self._console.width if self._console else 120
-        bar_width = max(20, terminal_width - 90)
+        if self._fixed_width is not None:
+            bar_width = self._fixed_width
+        else:
+            terminal_width = self._console.width if self._console else 120
+            bar_width = max(20, terminal_width - 90)
 
         # Calculate how many bar characters to fill
         if total_frames > 0 and total > 0:
@@ -127,7 +144,9 @@ class MatchAwareBarColumn(ProgressColumn):
         for i in range(bar_width):
             # Which frame range does this character represent?
             frame_start = int((i / bar_width) * total_frames) if total_frames > 0 else 0
-            frame_end = int(((i + 1) / bar_width) * total_frames) if total_frames > 0 else 0
+            frame_end = (
+                int(((i + 1) / bar_width) * total_frames) if total_frames > 0 else 0
+            )
 
             # Check if any frames in this range are matches
             has_match = any(f in match_set for f in range(frame_start, frame_end + 1))
@@ -145,9 +164,129 @@ class MatchAwareBarColumn(ProgressColumn):
         return bar
 
 
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
+
+
+def _truncate_name(name: str, max_len: int = 50) -> str:
+    """Truncate a name to fit in the display."""
+    if len(name) > max_len:
+        return name[: max_len - 3] + "..."
+    return name
+
+
+def _get_timeline_width(console: Console) -> int:
+    """Calculate timeline width based on terminal width."""
+    terminal_width = console.width
+    return max(20, terminal_width - 120)
+
+
+def _make_timeline(
+    video: VideoStats, console: Console, width: int | None = None
+) -> Text:
+    """Create a visual timeline showing where matches occurred."""
+    if video.total_frames == 0:
+        return Text("-")
+
+    timeline_width = width if width is not None else _get_timeline_width(console)
+    timeline = Text()
+    match_set = set(video.match_indices)
+
+    for i in range(timeline_width):
+        frame_start = int((i / timeline_width) * video.total_frames)
+        frame_end = int(((i + 1) / timeline_width) * video.total_frames)
+        has_match = any(f in match_set for f in range(frame_start, frame_end + 1))
+
+        if has_match:
+            timeline.append("█", style="green")
+        else:
+            timeline.append("░", style="dim")
+
+    return timeline
+
+
+def _print_summary(console: Console, stats: ExtractionStats) -> None:
+    """Print final summary statistics."""
+    console.print()
+
+    if stats.total_frames == 0:
+        console.print(
+            Panel(
+                f"[bold yellow]No frames processed[/bold yellow]\n"
+                f"Query: [cyan]{stats.query}[/cyan]",
+                border_style="yellow",
+            )
+        )
+        return
+
+    console.print(
+        Panel(
+            f"[bold green]Extraction Complete[/bold green]\n"
+            f"Query: [cyan]{stats.query}[/cyan]",
+            border_style="green",
+        )
+    )
+
+    processed_videos = [v for v in stats.videos if v.frames_processed > 0]
+    if processed_videos:
+        timeline_width = _get_timeline_width(console)
+
+        table = Table(title="Results by Video", show_header=True, expand=True)
+        table.add_column("Video", style="cyan", ratio=2)
+        table.add_column("Timeline", no_wrap=True, ratio=3)
+        table.add_column("Duration", justify="right")
+        table.add_column("Frames", justify="right")
+        table.add_column("Matches", justify="right", style="green")
+        table.add_column("Rate", justify="right")
+        table.add_column("Avg Conf", justify="right")
+        table.add_column("Time", justify="right")
+
+        for video in processed_videos:
+            duration_str = f"{video.duration:.1f}s"
+            match_rate = f"{video.match_rate:.1f}%"
+            avg_conf = f"{video.avg_confidence:.3f}" if video.confidences else "-"
+            time_str = f"{video.processing_time:.1f}s"
+            timeline = _make_timeline(video, console, width=timeline_width)
+
+            table.add_row(
+                video.path.name,
+                timeline,
+                duration_str,
+                str(video.frames_processed),
+                str(video.matches_found),
+                match_rate,
+                avg_conf,
+                time_str,
+            )
+
+        console.print(table)
+
+    overall = Table.grid(padding=(0, 3))
+    overall.add_column(style="bold")
+    overall.add_column()
+
+    overall.add_row("Total videos:", str(len(stats.videos)))
+    overall.add_row("Total frames processed:", str(stats.total_frames))
+    overall.add_row("Total matches:", f"[green bold]{stats.total_matches}[/green bold]")
+    overall.add_row("Total time:", f"{stats.elapsed_time:.1f}s")
+
+    if stats.elapsed_time > 0:
+        fps = stats.frames_per_second
+        overall.add_row("Average speed:", f"{fps:.1f} frames/s")
+
+    console.print()
+    console.print(Panel(overall, title="Summary", border_style="blue"))
+
+
+# ---------------------------------------------------------------------------
+# QuickProgress — single progress bar per video (quick mode)
+# ---------------------------------------------------------------------------
+
+
 class ExtractionProgress:
     """
-    Rich-based progress display for video frame extraction.
+    Rich-based progress display for quick-mode video frame extraction.
 
     Usage:
         with ExtractionProgress(videos, query, mode, threshold, matcher) as progress:
@@ -181,7 +320,6 @@ class ExtractionProgress:
         self._current_match_set: set[int] = set()
 
         # Progress bars - using custom match-aware bar for video progress
-        # expand=True makes the progress bar use full terminal width
         self._progress = Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}", justify="left"),
@@ -211,17 +349,16 @@ class ExtractionProgress:
         # Track if we're still running (for hiding stats panel when done)
         self._is_running: bool = True
 
-        # Track overall frame progress (updated as we learn about each video)
+        # Track overall frame progress
         self._overall_frames_processed: int = 0
         self._overall_frames_total: int = 0
-        self._overall_match_set: set[int] = set()  # Global frame indices for matches
+        self._overall_match_set: set[int] = set()
 
     def _get_current_totals(self) -> tuple[int, int]:
         """Get total frames and matches including current video in progress."""
         total_frames = self.stats.total_frames
         total_matches = self.stats.total_matches
 
-        # Add current video stats if processing
         if self._current_video_stats:
             total_frames += self._current_video_stats.frames_processed
             total_matches += self._current_video_stats.matches_found
@@ -236,10 +373,8 @@ class ExtractionProgress:
         stats_table.add_column(style="cyan", justify="right")
         stats_table.add_column(style="white")
 
-        # Get totals including current video
         total_frames, total_matches = self._get_current_totals()
 
-        # Current video stats
         if self._current_video_stats:
             match_style = "green bold" if self._last_was_match else "white"
         else:
@@ -280,24 +415,15 @@ class ExtractionProgress:
     def _make_display(self) -> RenderableType:
         """Create the full display."""
         if self._is_running:
-            # Show progress bars and stats panel during execution
             return Group(
                 self._progress,
                 self._make_stats_panel(),
             )
         else:
-            # Only show progress bars when done (stats panel hidden)
             return self._progress
-
-    def _truncate_name(self, name: str, max_len: int = 50) -> str:
-        """Truncate a name to fit in the display."""
-        if len(name) > max_len:
-            return name[: max_len - 3] + "..."
-        return name
 
     def __enter__(self):
         """Start the live display."""
-        # Start with total=0, we'll update it as we learn about each video
         self._overall_task = self._progress.add_task(
             "[bold blue]Overall",
             total=0,
@@ -305,15 +431,14 @@ class ExtractionProgress:
             total_frames=0,
         )
 
-        # Pre-create all video tasks (shown as pending/dimmed)
         for i, video_path in enumerate(self.video_files):
-            video_name = self._truncate_name(video_path.name)
+            video_name = _truncate_name(video_path.name)
             task_id = self._progress.add_task(
                 f"[dim]{video_name}[/dim]",
-                total=0,  # Unknown until we start processing
+                total=0,
                 match_set=set(),
                 total_frames=0,
-                start=False,  # Don't start the task yet
+                start=False,
             )
             self._video_tasks[i] = task_id
 
@@ -321,7 +446,7 @@ class ExtractionProgress:
             self._make_display(),
             console=self.console,
             refresh_per_second=4,
-            transient=True,  # Clear the live display when done
+            transient=True,
         )
         self._live.__enter__()
         return self
@@ -331,7 +456,7 @@ class ExtractionProgress:
         self._is_running = False
         if self._live:
             self._live.__exit__(exc_type, exc_val, exc_tb)
-        self.print_summary()
+        _print_summary(self.console, self.stats)
 
     def start_video(
         self,
@@ -349,7 +474,6 @@ class ExtractionProgress:
         self._video_start_time = time.time()
         self._current_match_set = set()
 
-        # Update overall total with this video's frames
         self._overall_frames_total += estimated_frames
         if self._overall_task is not None:
             self._progress.update(
@@ -358,8 +482,7 @@ class ExtractionProgress:
                 total_frames=self._overall_frames_total,
             )
 
-        # Activate the pre-created video task
-        video_name = self._truncate_name(video_path.name)
+        video_name = _truncate_name(video_path.name)
         self._video_task = self._video_tasks.get(self._current_video_index)
 
         if self._video_task is not None:
@@ -370,7 +493,6 @@ class ExtractionProgress:
                 total_frames=estimated_frames,
                 match_set=self._current_match_set,
             )
-            # Start the task (makes it active)
             self._progress.start_task(self._video_task)
 
         if self._live:
@@ -391,10 +513,8 @@ class ExtractionProgress:
             self._current_video_stats.confidences.append(confidence)
             self._current_video_stats.match_indices.append(frame_index)
             self._current_match_set.add(frame_index)
-            # Track in overall match set using global frame index
             self._overall_match_set.add(self._overall_frames_processed)
 
-        # Update overall progress
         self._overall_frames_processed += 1
         if self._overall_task is not None:
             self._progress.update(
@@ -403,7 +523,6 @@ class ExtractionProgress:
                 match_set=self._overall_match_set,
             )
 
-        # Update video progress bar
         if self._video_task is not None:
             self._progress.update(
                 self._video_task,
@@ -422,16 +541,12 @@ class ExtractionProgress:
         self._current_video_stats.processing_time = time.time() - self._video_start_time
         self.stats.videos.append(self._current_video_stats)
 
-        # Mark the video task as complete (change style to indicate it's done)
         if self._video_task is not None:
-            video_name = self._truncate_name(self._current_video_stats.path.name)
-
-            # Update description to show it's complete (use green for completed)
+            video_name = _truncate_name(self._current_video_stats.path.name)
             self._progress.update(
                 self._video_task,
                 description=f"[green]{video_name}[/green]",
             )
-
             self._video_task = None
 
         self._current_video_stats = None
@@ -442,117 +557,492 @@ class ExtractionProgress:
 
     def log_saved_frame(self, output_path: Path, confidence: float) -> None:
         """Log a saved frame (shown below progress)."""
-        # We'll collect these and show in summary
         pass
 
-    def _get_timeline_width(self) -> int:
-        """Calculate timeline width based on terminal width."""
-        # Reserve space for other columns: Video(40) + Duration(10) + Frames(8) + Matches(8) + Rate(8) + AvgConf(10) + Time(8) + padding(20)
-        terminal_width = self.console.width
-        timeline_width = max(20, terminal_width - 120)
-        return timeline_width
 
-    def _make_timeline(self, video: VideoStats, width: int | None = None) -> Text:
-        """Create a visual timeline showing where matches occurred."""
-        if video.total_frames == 0:
-            return Text("-")
+# Alias for backward compatibility
+QuickProgress = ExtractionProgress
 
-        # Use provided width or calculate dynamically
-        timeline_width = width if width is not None else self._get_timeline_width()
 
-        timeline = Text()
-        match_set = set(video.match_indices)
+# ---------------------------------------------------------------------------
+# ExhaustiveProgress — three-phase per video (exhaustive mode)
+# ---------------------------------------------------------------------------
 
-        for i in range(timeline_width):
-            # Which frame range does this character represent?
-            frame_start = int((i / timeline_width) * video.total_frames)
-            frame_end = int(((i + 1) / timeline_width) * video.total_frames)
 
-            # Check if any frames in this range are matches
-            has_match = any(f in match_set for f in range(frame_start, frame_end + 1))
+class ExhaustiveProgress:
+    """
+    Rich-based progress display for exhaustive-mode extraction.
 
-            if has_match:
-                timeline.append("█", style="green")
-            else:
-                timeline.append("░", style="dim")
+    Uses a single Progress widget for overall + phase tasks so that columns
+    align perfectly and spinners indicate the active task.
 
-        return timeline
+    Layout while running:
+        ✓ video1.mp4  2 segments, 120 frames extracted, 8.3s
+        ⠋ Overall (video2.mp4)   [━━━━━━━━━━━░░░░░░░░]  55%          0:05:00
+        ⠋   Scanning             [━━green━━━red━━━━━━━] 100%  Done    0:03:12
+        ⠋   Refining             [━━━━━━━━░░░░░░░░░░░░]  40%  4/10   0:01:48
+            Extracting           [░░░░░░░░░░░░░░░░░░░░]   0%  waiting
+          video3.mp4  (dimmed, pending)
+        ┌─ Statistics ───────────────────────────────────────┐
+        │  Phase: Refining   Segments: 10   Threshold: 0.70 │
+        └───────────────────────────────────────────────────-┘
+    """
 
-    def print_summary(self) -> None:
-        """Print final summary statistics."""
-        self.console.print()
+    _PHASE_LABELS = {
+        "scanning": "Scanning",
+        "refining": "Refining",
+        "extracting": "Extracting",
+    }
 
-        # Check if we actually processed any frames
-        if self.stats.total_frames == 0:
-            # No frames processed - likely all errors, show minimal output
-            self.console.print(
-                Panel(
-                    f"[bold yellow]No frames processed[/bold yellow]\n"
-                    f"Query: [cyan]{self.stats.query}[/cyan]",
-                    border_style="yellow",
-                )
-            )
-            return
+    # Per-video overall-progress weights (must sum to 100)
+    _W_SCAN = 50
+    _W_REFINE = 30
+    _W_EXTRACT = 20
 
-        # Summary header
-        self.console.print(
-            Panel(
-                f"[bold green]Extraction Complete[/bold green]\n"
-                f"Query: [cyan]{self.stats.query}[/cyan]",
-                border_style="green",
-            )
+    def __init__(
+        self,
+        video_files: list[Path],
+        query: str,
+        threshold: float,
+        matcher_type: str,
+    ):
+        self.console = Console()
+        self.stats = ExtractionStats(
+            query=query,
+            mode="exhaustive",
+            threshold=threshold,
+            matcher_type=matcher_type,
+        )
+        self.video_files = video_files
+        self._current_video_stats: VideoStats | None = None
+        self._video_start_time: float = 0.0
+        self._current_match_set: set[int] = set()
+        self._current_phase: str = "scanning"
+
+        self._live: Live | None = None
+        self._is_running: bool = True
+
+        self._last_confidence: float = 0.0
+        self._last_was_match: bool = False
+
+        # Single Progress widget — all tasks share columns → perfect alignment
+        self._progress = Progress(
+            SpinnerColumn(),
+            TextColumn("{task.description}", justify="left"),
+            MatchAwareBarColumn(console=self.console, bar_width=40),
+            TaskProgressColumn(),
+            TextColumn("{task.fields[status_text]}", justify="left"),
+            TimeElapsedColumn(),
+            console=self.console,
+            expand=True,
         )
 
-        # Results table with timeline - only show videos that were actually processed
-        processed_videos = [v for v in self.stats.videos if v.frames_processed > 0]
-        if processed_videos:
-            # Calculate timeline width for consistent display
-            timeline_width = self._get_timeline_width()
+        self._overall_task = None
+        self._scan_task = None
+        self._refine_task = None
+        self._extract_task = None
 
-            # expand=True makes the table use full terminal width
-            table = Table(title="Results by Video", show_header=True, expand=True)
-            table.add_column("Video", style="cyan", ratio=2)
-            table.add_column("Timeline", no_wrap=True, ratio=3)
-            table.add_column("Duration", justify="right")
-            table.add_column("Frames", justify="right")
-            table.add_column("Matches", justify="right", style="green")
-            table.add_column("Rate", justify="right")
-            table.add_column("Avg Conf", justify="right")
-            table.add_column("Time", justify="right")
+        # Completed-video one-line summaries
+        self._completed_texts: list[Text] = []
+        self._current_video_index: int = -1
 
-            for video in processed_videos:
-                duration_str = f"{video.duration:.1f}s"
-                match_rate = f"{video.match_rate:.1f}%"
-                avg_conf = f"{video.avg_confidence:.3f}" if video.confidences else "-"
-                time_str = f"{video.processing_time:.1f}s"
-                timeline = self._make_timeline(video, width=timeline_width)
+        # For weighted overall progress
+        self._scan_total: int = 0
+        self._refine_total: int = 0
+        self._extract_total: int = 0
 
-                table.add_row(
-                    video.path.name,
-                    timeline,
-                    duration_str,
-                    str(video.frames_processed),
-                    str(video.matches_found),
-                    match_rate,
-                    avg_conf,
-                    time_str,
+    # ----- overall progress helpers -----
+
+    def _video_base(self) -> int:
+        """Base progress for the current video in overall units."""
+        return self._current_video_index * 100
+
+    def _update_overall(
+        self, scan_done: int = 0, refine_done: int = 0, extract_done: int = 0
+    ) -> None:
+        """Recompute overall progress from phase completion fractions."""
+        if self._overall_task is None:
+            return
+
+        scan_frac = (scan_done / self._scan_total) if self._scan_total > 0 else 0
+        refine_frac = (
+            (refine_done / self._refine_total) if self._refine_total > 0 else 0
+        )
+        extract_frac = (
+            (extract_done / self._extract_total) if self._extract_total > 0 else 0
+        )
+
+        weighted = (
+            scan_frac * self._W_SCAN
+            + refine_frac * self._W_REFINE
+            + extract_frac * self._W_EXTRACT
+        )
+        self._progress.update(
+            self._overall_task,
+            completed=self._video_base() + int(weighted),
+        )
+
+    # ----- display composition -----
+
+    def _make_stats_panel(self) -> Panel:
+        grid = Table.grid(padding=(0, 2))
+        grid.add_column(style="cyan", justify="right")
+        grid.add_column(style="white")
+        grid.add_column(style="cyan", justify="right")
+        grid.add_column(style="white")
+
+        total_frames, total_matches = self._get_current_totals()
+        match_style = "green bold" if self._last_was_match else "white"
+
+        grid.add_row(
+            "Phase:",
+            Text(
+                self._PHASE_LABELS.get(self._current_phase, self._current_phase),
+                style="bold",
+            ),
+            "Segments:",
+            str(self._current_video_stats.segments_found)
+            if self._current_video_stats
+            else "0",
+        )
+        grid.add_row(
+            "Matches:",
+            Text(str(total_matches), style="green bold"),
+            "Frames:",
+            str(total_frames),
+        )
+        conf_text = f"{self._last_confidence:.3f}"
+        grid.add_row(
+            "Last conf:",
+            Text(conf_text, style=match_style),
+            "Threshold:",
+            f"{self.stats.threshold:.2f}",
+        )
+        if total_frames > 0:
+            elapsed = self.stats.elapsed_time
+            fps = total_frames / elapsed if elapsed > 0 else 0.0
+            grid.add_row("Speed:", f"{fps:.1f} frames/s", "Mode:", "exhaustive")
+
+        return Panel(
+            grid, title="[bold]Statistics[/bold]", border_style="blue", padding=(0, 1)
+        )
+
+    def _make_display(self) -> RenderableType:
+        parts: list[RenderableType] = []
+
+        # Completed-video summaries
+        for txt in self._completed_texts:
+            parts.append(txt)
+
+        # Active video name (separate line above progress)
+        if self._scan_task is not None and self._current_video_stats:
+            name = _truncate_name(self._current_video_stats.path.name)
+            parts.append(Text(f"  {name}", style="cyan bold"))
+
+        # Single progress widget: Overall + Scanning + Refining + Extracting
+        parts.append(self._progress)
+
+        # Pending videos
+        for i in range(self._current_video_index + 1, len(self.video_files)):
+            name = _truncate_name(self.video_files[i].name)
+            parts.append(Text(f"  {name}", style="dim"))
+
+        if self._is_running:
+            parts.append(self._make_stats_panel())
+
+        return Group(*parts)
+
+    def _get_current_totals(self) -> tuple[int, int]:
+        total_frames = self.stats.total_frames
+        total_matches = self.stats.total_matches
+        if self._current_video_stats:
+            total_frames += self._current_video_stats.frames_processed
+            total_matches += self._current_video_stats.matches_found
+        return total_frames, total_matches
+
+    # ----- context manager -----
+
+    def __enter__(self):
+        n = len(self.video_files)
+        self._overall_task = self._progress.add_task(
+            "[bold blue]Overall[/bold blue]",
+            total=n * 100,
+            match_set=set(),
+            total_frames=n * 100,
+            status_text=f"0/{n} videos",
+        )
+
+        self._live = Live(
+            self._make_display(),
+            console=self.console,
+            refresh_per_second=4,
+            transient=True,
+        )
+        self._live.__enter__()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self._is_running = False
+        if self._live:
+            self._live.__exit__(exc_type, exc_val, exc_tb)
+        _print_summary(self.console, self.stats)
+
+    # ----- lifecycle -----
+
+    def start_video(
+        self,
+        video_path: Path,
+        duration: float,
+        estimated_frames: int,
+    ) -> None:
+        self._current_video_index += 1
+        self._current_video_stats = VideoStats(
+            path=video_path,
+            duration=duration,
+            total_frames=estimated_frames,
+        )
+        self._video_start_time = time.time()
+        self._current_match_set = set()
+        self._current_phase = "scanning"
+        self._scan_total = estimated_frames
+        self._refine_total = 0
+        self._extract_total = 0
+
+        # Remove prior phase tasks (if any from previous video)
+        for task_id in (self._scan_task, self._refine_task, self._extract_task):
+            if task_id is not None:
+                self._progress.remove_task(task_id)
+
+        # Create three phase tasks in the shared Progress widget
+        self._scan_task = self._progress.add_task(
+            "[cyan]  Scanning[/cyan]",
+            total=estimated_frames,
+            match_set=self._current_match_set,
+            total_frames=estimated_frames,
+            status_text="",
+        )
+        self._refine_task = self._progress.add_task(
+            "[dim]  Refining[/dim]",
+            total=1,  # placeholder until segments known
+            match_set=set(),
+            total_frames=1,
+            status_text="[dim]waiting[/dim]",
+            start=False,
+        )
+        self._extract_task = self._progress.add_task(
+            "[dim]  Extracting[/dim]",
+            total=1,  # placeholder until frame count known
+            match_set=set(),
+            total_frames=1,
+            status_text="[dim]waiting[/dim]",
+            start=False,
+        )
+
+        if self._live:
+            self._live.update(self._make_display())
+
+    def update(self, confidence: float, is_match: bool) -> None:
+        """Update scanning progress (phase 1)."""
+        if self._current_video_stats is None:
+            return
+
+        frame_index = self._current_video_stats.frames_processed
+        self._current_video_stats.frames_processed += 1
+        self._last_confidence = confidence
+        self._last_was_match = is_match
+
+        if is_match:
+            self._current_video_stats.matches_found += 1
+            self._current_video_stats.confidences.append(confidence)
+            self._current_video_stats.match_indices.append(frame_index)
+            self._current_match_set.add(frame_index)
+
+        if self._scan_task is not None:
+            self._progress.update(
+                self._scan_task,
+                advance=1,
+                match_set=self._current_match_set,
+            )
+
+        self._update_overall(
+            scan_done=self._current_video_stats.frames_processed,
+        )
+
+        if self._live:
+            self._live.update(self._make_display())
+
+    def update_phase(self, phase: str, current: int, total: int) -> None:
+        """Update phase progress (called by phase_callback from exhaustive_extract)."""
+
+        if phase == "scan_complete":
+            self._current_phase = "refining"
+            segments = current
+            if self._current_video_stats:
+                self._current_video_stats.segments_found = segments
+
+            # Mark scanning as done
+            if self._scan_task is not None:
+                scan_total = self._progress.tasks[self._scan_task].total or 0
+                seg_text = f"[green]Done[/green] ({segments} segment{'s' if segments != 1 else ''})"
+                self._progress.update(
+                    self._scan_task,
+                    completed=scan_total,
+                    description="[green]  Scanning[/green]",
+                    status_text=seg_text,
                 )
 
-            self.console.print(table)
+            # Activate refining bar
+            self._refine_total = segments
+            if self._refine_task is not None:
+                if segments > 0:
+                    self._progress.update(
+                        self._refine_task,
+                        description="[cyan]  Refining[/cyan]",
+                        total=segments,
+                        total_frames=segments,
+                        status_text=f"0/{segments} segments",
+                    )
+                    self._progress.start_task(self._refine_task)
+                else:
+                    self._progress.update(
+                        self._refine_task,
+                        description="[dim]  Refining[/dim]",
+                        status_text="[dim]no segments[/dim]",
+                    )
 
-        # Overall stats
-        stats_table = Table.grid(padding=(0, 3))
-        stats_table.add_column(style="bold")
-        stats_table.add_column()
+            self._update_overall(
+                scan_done=self._scan_total,
+            )
 
-        stats_table.add_row("Total videos:", str(len(self.stats.videos)))
-        stats_table.add_row("Total frames processed:", str(self.stats.total_frames))
-        stats_table.add_row("Total matches:", f"[green bold]{self.stats.total_matches}[/green bold]")
-        stats_table.add_row("Total time:", f"{self.stats.elapsed_time:.1f}s")
+        elif phase == "refining":
+            self._current_phase = "refining"
+            if self._refine_task is not None:
+                self._progress.update(
+                    self._refine_task,
+                    completed=current,
+                    status_text=f"{current}/{total} segments",
+                )
 
-        if self.stats.elapsed_time > 0:
-            fps = self.stats.frames_per_second
-            stats_table.add_row("Average speed:", f"{fps:.1f} frames/s")
+            self._update_overall(
+                scan_done=self._scan_total,
+                refine_done=current,
+            )
 
-        self.console.print()
-        self.console.print(Panel(stats_table, title="Summary", border_style="blue"))
+        elif phase == "refine_complete":
+            total_extract_frames = current
+
+            # Mark refining as done
+            if self._refine_task is not None:
+                ref_total = self._progress.tasks[self._refine_task].total or 0
+                self._progress.update(
+                    self._refine_task,
+                    completed=ref_total,
+                    description="[green]  Refining[/green]",
+                    status_text="[green]Done[/green]",
+                )
+
+            # Activate extracting bar
+            self._current_phase = "extracting"
+            self._extract_total = total_extract_frames
+            if self._extract_task is not None:
+                if total_extract_frames > 0:
+                    self._progress.update(
+                        self._extract_task,
+                        description="[cyan]  Extracting[/cyan]",
+                        total=total_extract_frames,
+                        total_frames=total_extract_frames,
+                        status_text=f"0/{total_extract_frames} frames",
+                    )
+                    self._progress.start_task(self._extract_task)
+                else:
+                    self._progress.update(
+                        self._extract_task,
+                        description="[dim]  Extracting[/dim]",
+                        status_text="[dim]0 frames[/dim]",
+                    )
+
+            self._update_overall(
+                scan_done=self._scan_total,
+                refine_done=self._refine_total,
+            )
+
+        elif phase == "extracting":
+            self._current_phase = "extracting"
+            if self._current_video_stats:
+                self._current_video_stats.frames_extracted = current
+
+            if self._extract_task is not None:
+                self._progress.update(
+                    self._extract_task,
+                    completed=current,
+                    status_text=f"{current}/{total} frames",
+                )
+
+            self._update_overall(
+                scan_done=self._scan_total,
+                refine_done=self._refine_total,
+                extract_done=current,
+            )
+
+        if self._live:
+            self._live.update(self._make_display())
+
+    def finish_video(self) -> None:
+        if self._current_video_stats is None:
+            return
+
+        self._current_video_stats.processing_time = time.time() - self._video_start_time
+        self.stats.videos.append(self._current_video_stats)
+
+        # Mark extracting as done
+        if self._extract_task is not None:
+            ext_total = self._progress.tasks[self._extract_task].total or 0
+            if ext_total > 0:
+                self._progress.update(
+                    self._extract_task,
+                    completed=ext_total,
+                    description="[green]  Extracting[/green]",
+                    status_text="[green]Done[/green]",
+                )
+
+        # Snap overall to exact video boundary
+        if self._overall_task is not None:
+            done = self._current_video_index + 1
+            n = len(self.video_files)
+            self._progress.update(
+                self._overall_task,
+                completed=done * 100,
+                status_text=f"{done}/{n} videos",
+            )
+
+        # Remove phase tasks from widget
+        for task_id in (self._scan_task, self._refine_task, self._extract_task):
+            if task_id is not None:
+                self._progress.remove_task(task_id)
+
+        # Build completed-video summary line
+        vs = self._current_video_stats
+        name = _truncate_name(vs.path.name)
+        segs = vs.segments_found
+        extracted = vs.frames_extracted
+        t = f"{vs.processing_time:.1f}s"
+        summary = Text()
+        summary.append("  ✓ ", style="green bold")
+        summary.append(name, style="green")
+        summary.append(
+            f"  {segs} segment{'s' if segs != 1 else ''}, {extracted} frames extracted, {t}",
+            style="dim",
+        )
+        self._completed_texts.append(summary)
+
+        self._scan_task = None
+        self._refine_task = None
+        self._extract_task = None
+        self._current_video_stats = None
+        self._current_match_set = set()
+
+        if self._live:
+            self._live.update(self._make_display())
+
+    def log_saved_frame(self, output_path: Path, confidence: float) -> None:
+        pass
