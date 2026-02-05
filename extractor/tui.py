@@ -143,9 +143,10 @@ class MatchAwareBarColumn(ProgressColumn):
         total = task.total or 1
         completed = task.completed
 
-        # Get match data from task fields
+        # Get match data and optional override style from task fields
         match_set: set = task.fields.get("match_set", set())
         total_frames: int = task.fields.get("total_frames", int(total))
+        bar_style: str | None = task.fields.get("bar_style")
 
         # Calculate bar width based on terminal width
         if self._fixed_width is not None:
@@ -177,6 +178,8 @@ class MatchAwareBarColumn(ProgressColumn):
                 # This part of the bar is filled (processed)
                 if has_match:
                     bar.append("━", style="green bold")
+                elif bar_style:
+                    bar.append("━", style=bar_style)
                 else:
                     bar.append("━", style="bar.complete")
             else:
@@ -599,19 +602,20 @@ class ExhaustiveProgress:
     align perfectly and spinners indicate the active task.
 
     Layout while running:
-        ✓ video1.mp4  2 segments, 120 frames extracted, 8.3s
-          video2.mp4
-        ✓   Scanning             [━━green━━━red━━━━━━━] 100%  Done        0:03:12
-        ⠋   Refining             [━━━━━━━━░░░░░░░░░░░░]  40%  4/10       0:01:48
-            Extracting           [░░░░░░░░░░░░░░░░░░░░]   0%  waiting    -:--:--
-          video3.mp4  (dimmed, pending)
-        ┌─ Statistics ───────────────────────────────────────────┐
-        │  Overall: 55%                Videos: 1/3  5:00        │
-        │  Phase: Refining             Segments: 10             │
-        │  Matches: 42                 Frames: 1200             │
-        │  Last conf: 0.823            Threshold: 0.70          │
-        │  Speed: 12.5 frames/s        Mode: exhaustive         │
-        └───────────────────────────────────────────────────────┘
+        Query: "A dark blue car"  │  Mode: exhaustive  │  Matcher: transformers_embedding
+        Threshold: 0.70  │  Interval: 1.0s  │  Range: entire video
+          ✓ video1.mp4  2 segments, 120 frames extracted, 8.3s
+            video2.mp4
+        ✓   Scanning     [━━green━━━grey━━━━━━━] 100%  Done (3 segments)  0:03:12
+        ⠋   Refining     [━━━━green━━━━░░░░░░░░]  40%  2/3 segments      0:01:48
+            Extracting   [░░░░░░░░░░░░░░░░░░░░░]   0%  waiting           -:--:--
+            video3.mp4
+        ┌─ Statistics ──────────────────────────────────┐
+        │  Overall: 55%          Videos: 1/3  5:00      │
+        │  Phase: Refining       Segments: 3            │
+        │  Matches: 42           Frames: 1200           │
+        │  Last conf: 0.823      Speed: 12.5 frames/s   │
+        └───────────────────────────────────────────────┘
     """
 
     _PHASE_LABELS = {
@@ -631,6 +635,9 @@ class ExhaustiveProgress:
         query: str,
         threshold: float,
         matcher_type: str,
+        interval: float = 1.0,
+        start_time_str: str | None = None,
+        end_time_str: str | None = None,
     ):
         self.console = Console()
         self.stats = ExtractionStats(
@@ -640,6 +647,9 @@ class ExhaustiveProgress:
             matcher_type=matcher_type,
         )
         self.video_files = video_files
+        self._interval = interval
+        self._start_time_str = start_time_str
+        self._end_time_str = end_time_str
         self._current_video_stats: VideoStats | None = None
         self._video_start_time: float = 0.0
         self._current_match_set: set[int] = set()
@@ -705,6 +715,37 @@ class ExhaustiveProgress:
 
     # ----- display composition -----
 
+    def _make_header(self) -> RenderableType:
+        """Create a settings summary header above the video list."""
+        sep = Text("  │  ", style="dim")
+
+        line1 = Text()
+        line1.append("Query: ", style="dim")
+        line1.append(f'"{self.stats.query}"', style="cyan")
+        line1.append_text(sep)
+        line1.append("Mode: ", style="dim")
+        line1.append("exhaustive", style="white")
+        line1.append_text(sep)
+        line1.append("Matcher: ", style="dim")
+        line1.append(self.stats.matcher_type, style="white")
+
+        line2 = Text()
+        line2.append("Threshold: ", style="dim")
+        line2.append(f"{self.stats.threshold:.2f}", style="white")
+        line2.append_text(sep)
+        line2.append("Interval: ", style="dim")
+        line2.append(f"{self._interval}s", style="white")
+        line2.append_text(sep)
+        line2.append("Range: ", style="dim")
+        if self._start_time_str or self._end_time_str:
+            start = self._start_time_str or "0s"
+            end = self._end_time_str or "end"
+            line2.append(f"{start} – {end}", style="white")
+        else:
+            line2.append("entire video", style="white")
+
+        return Group(line1, line2)
+
     def _make_stats_panel(self) -> Panel:
         grid = Table.grid(padding=(0, 2))
         grid.add_column(style="cyan", justify="right")
@@ -746,15 +787,13 @@ class ExhaustiveProgress:
             str(total_frames),
         )
         conf_text = f"{self._last_confidence:.3f}"
+        fps = total_frames / elapsed if elapsed > 0 and total_frames > 0 else 0.0
         grid.add_row(
             "Last conf:",
             Text(conf_text, style=match_style),
-            "Threshold:",
-            f"{self.stats.threshold:.2f}",
+            "Speed:",
+            f"{fps:.1f} frames/s",
         )
-        if total_frames > 0:
-            fps = total_frames / elapsed if elapsed > 0 else 0.0
-            grid.add_row("Speed:", f"{fps:.1f} frames/s", "Mode:", "exhaustive")
 
         return Panel(
             grid, title="[bold]Statistics[/bold]", border_style="blue", padding=(0, 1)
@@ -762,6 +801,10 @@ class ExhaustiveProgress:
 
     def _make_display(self) -> RenderableType:
         parts: list[RenderableType] = []
+
+        # Settings header
+        if self._is_running:
+            parts.append(self._make_header())
 
         # Completed-video summaries
         for txt in self._completed_texts:
@@ -855,6 +898,7 @@ class ExhaustiveProgress:
             match_set=set(),
             total_frames=1,
             status_text="[dim]waiting[/dim]",
+            bar_style="green bold",
             start=False,
         )
         self._extract_task = self._progress.add_task(
@@ -863,6 +907,7 @@ class ExhaustiveProgress:
             match_set=set(),
             total_frames=1,
             status_text="[dim]waiting[/dim]",
+            bar_style="green bold",
             start=False,
         )
 

@@ -231,6 +231,9 @@ def main_with_tui(args, video_files, output_dir, interval, start_spec, end_spec)
             query=args.query,
             threshold=args.threshold,
             matcher_type=args.matcher,
+            interval=interval,
+            start_time_str=args.start,
+            end_time_str=args.end,
         )
     else:
         progress_ctx = ExtractionProgress(
