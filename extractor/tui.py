@@ -40,6 +40,9 @@ class VideoStats:
     total_frames: int = 0
     matches_found: int = 0
     processing_time: float = 0.0
+    # Confidence for every sampled frame (processed order).
+    sample_confidences: list[float] = field(default_factory=list)
+    # Confidence values for matches only (used by Avg Conf summary).
     confidences: list[float] = field(default_factory=list)
     # Track which frame indices were matches for the timeline
     match_indices: list[int] = field(default_factory=list)
@@ -203,31 +206,51 @@ def _truncate_name(name: str, max_len: int = 50) -> str:
 def _get_timeline_width(console: Console) -> int:
     """Calculate timeline width based on terminal width."""
     terminal_width = console.width
-    return max(20, terminal_width - 120)
+    # Reserve room for non-timeline columns and table borders.
+    return max(30, terminal_width - 86)
 
 
 def _make_timeline(
     video: VideoStats, console: Console, width: int | None = None
-) -> Text:
-    """Create a visual timeline showing where matches occurred."""
-    if video.total_frames == 0:
+) -> RenderableType:
+    """
+    Create a two-row confidence timeline.
+
+    - Height (character) encodes confidence with 16 vertical steps (2 x 8 levels).
+    - Color encodes match status: green if bucket has at least one match, cyan otherwise.
+    """
+    if not video.sample_confidences:
         return Text("-")
 
+    spark_chars = [" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
+    confidences = video.sample_confidences
+    n = len(confidences)
     timeline_width = width if width is not None else _get_timeline_width(console)
-    timeline = Text()
+    top = Text()
+    bottom = Text()
     match_set = set(video.match_indices)
 
     for i in range(timeline_width):
-        frame_start = int((i / timeline_width) * video.total_frames)
-        frame_end = int(((i + 1) / timeline_width) * video.total_frames)
-        has_match = any(f in match_set for f in range(frame_start, frame_end + 1))
+        start = int((i / timeline_width) * n)
+        end = int(((i + 1) / timeline_width) * n)
+        if end <= start:
+            end = min(n, start + 1)
 
-        if has_match:
-            timeline.append("█", style="green")
-        else:
-            timeline.append("░", style="dim")
+        bucket = confidences[start:end]
+        bucket_conf = max(bucket) if bucket else 0.0
+        level_16 = max(0, min(16, int(round(bucket_conf * 16))))
+        top_level = max(0, level_16 - 8)
+        bottom_level = min(8, level_16)
 
-    return timeline
+        has_match = any(idx in match_set for idx in range(start, end))
+        style = "green bold" if has_match else "cyan"
+
+        top.append(spark_chars[top_level], style=style if top_level > 0 else "dim")
+        bottom.append(
+            spark_chars[bottom_level], style=style if bottom_level > 0 else "dim"
+        )
+
+    return Group(top, bottom)
 
 
 def _print_summary(console: Console, stats: ExtractionStats) -> None:
@@ -258,7 +281,7 @@ def _print_summary(console: Console, stats: ExtractionStats) -> None:
 
         table = Table(title="Results by Video", show_header=True, expand=True)
         table.add_column("Video", style="cyan", ratio=2)
-        table.add_column("Timeline", no_wrap=True, ratio=3)
+        table.add_column("Timeline", no_wrap=True, ratio=5)
         table.add_column("Duration", justify="right")
         table.add_column("Frames", justify="right")
         table.add_column("Matches", justify="right", style="green")
@@ -574,6 +597,7 @@ class ExtractionProgress:
         self._current_video_stats.frames_processed += 1
         self._last_confidence = confidence
         self._last_was_match = is_match
+        self._current_video_stats.sample_confidences.append(confidence)
 
         if is_match:
             self._current_video_stats.matches_found += 1
@@ -977,6 +1001,7 @@ class ExhaustiveProgress:
         self._current_video_stats.frames_processed += 1
         self._last_confidence = confidence
         self._last_was_match = is_match
+        self._current_video_stats.sample_confidences.append(confidence)
 
         if is_match:
             self._current_video_stats.matches_found += 1
