@@ -14,7 +14,6 @@ from rich.live import Live
 from rich.panel import Panel
 from rich.progress import (
     Progress,
-    SpinnerColumn,
     TextColumn,
     TaskProgressColumn,
     TimeElapsedColumn,
@@ -314,12 +313,10 @@ class ExtractionProgress:
     Rich-based progress display for quick-mode video frame extraction.
 
     Usage:
-        with ExtractionProgress(videos, query, mode, threshold, matcher) as progress:
-            for video_path in videos:
-                progress.start_video(video_path, duration, estimated_frames)
-                for frame, confidence, is_match in process_frames():
-                    progress.update(confidence, is_match)
-                progress.finish_video()
+        with ExtractionProgress(...) as progress:
+            progress.start_video(...)
+            progress.update(...)
+            progress.finish_video()
     """
 
     def __init__(
@@ -329,6 +326,10 @@ class ExtractionProgress:
         mode: str,
         threshold: float,
         matcher_type: str,
+        interval: float,
+        batch_size: int,
+        start_time_str: str | None = None,
+        end_time_str: str | None = None,
     ):
         self.console = Console()
         self.stats = ExtractionStats(
@@ -338,6 +339,10 @@ class ExtractionProgress:
             matcher_type=matcher_type,
         )
         self.video_files = video_files
+        self._interval = interval
+        self._batch_size = batch_size
+        self._start_time_str = start_time_str
+        self._end_time_str = end_time_str
         self._current_video_stats: VideoStats | None = None
         self._video_start_time: float = 0.0
 
@@ -346,7 +351,7 @@ class ExtractionProgress:
 
         # Progress bars - using custom match-aware bar for video progress
         self._progress = Progress(
-            SpinnerColumn(),
+            PhaseSpinnerColumn(),
             TextColumn("[progress.description]{task.description}", justify="left"),
             MatchAwareBarColumn(console=self.console),
             TaskProgressColumn(),
@@ -357,7 +362,6 @@ class ExtractionProgress:
         )
 
         # Task IDs
-        self._overall_task = None
         self._video_task = None
 
         # Pre-created task IDs for each video (mapping: video index -> task ID)
@@ -377,7 +381,40 @@ class ExtractionProgress:
         # Track overall frame progress
         self._overall_frames_processed: int = 0
         self._overall_frames_total: int = 0
-        self._overall_match_set: set[int] = set()
+
+    def _make_header(self) -> RenderableType:
+        """Create a settings summary header above the progress table."""
+        sep = Text("  │  ", style="dim")
+
+        line1 = Text()
+        line1.append("Query: ", style="dim")
+        line1.append(f'"{self.stats.query}"', style="cyan")
+        line1.append_text(sep)
+        line1.append("Mode: ", style="dim")
+        line1.append(self.stats.mode, style="white")
+        line1.append_text(sep)
+        line1.append("Matcher: ", style="dim")
+        line1.append(self.stats.matcher_type, style="white")
+
+        line2 = Text()
+        line2.append("Threshold: ", style="dim")
+        line2.append(f"{self.stats.threshold:.2f}", style="white")
+        line2.append_text(sep)
+        line2.append("Interval: ", style="dim")
+        line2.append(f"{self._interval}s", style="white")
+        line2.append_text(sep)
+        line2.append("Batch: ", style="dim")
+        line2.append(str(self._batch_size), style="white")
+        line2.append_text(sep)
+        line2.append("Range: ", style="dim")
+        if self._start_time_str or self._end_time_str:
+            start = self._start_time_str or "0s"
+            end = self._end_time_str or "end"
+            line2.append(f"{start} – {end}", style="white")
+        else:
+            line2.append("entire video", style="white")
+
+        return Group(line1, line2)
 
     def _get_current_totals(self) -> tuple[int, int]:
         """Get total frames and matches including current video in progress."""
@@ -397,6 +434,22 @@ class ExtractionProgress:
         stats_table.add_column(style="white")
         stats_table.add_column(style="cyan", justify="right")
         stats_table.add_column(style="white")
+
+        n = len(self.video_files)
+        done = self._current_video_index + 1 if self._is_running else len(self.stats.videos)
+        pct = (
+            int((self._overall_frames_processed / self._overall_frames_total) * 100)
+            if self._overall_frames_total > 0
+            else 0
+        )
+        elapsed = self.stats.elapsed_time
+        elapsed_str = f"{int(elapsed // 60)}:{int(elapsed % 60):02d}"
+        stats_table.add_row(
+            "Overall:",
+            Text(f"{pct}%", style="bold blue"),
+            "Videos:",
+            f"{done}/{n}  {elapsed_str}",
+        )
 
         total_frames, total_matches = self._get_current_totals()
 
@@ -421,7 +474,6 @@ class ExtractionProgress:
         )
 
         if total_frames > 0:
-            elapsed = self.stats.elapsed_time
             fps = total_frames / elapsed if elapsed > 0 else 0.0
             stats_table.add_row(
                 "Speed:",
@@ -441,7 +493,10 @@ class ExtractionProgress:
         """Create the full display."""
         if self._is_running:
             return Group(
+                self._make_header(),
+                Text(""),
                 self._progress,
+                Text(""),
                 self._make_stats_panel(),
             )
         else:
@@ -449,13 +504,6 @@ class ExtractionProgress:
 
     def __enter__(self):
         """Start the live display."""
-        self._overall_task = self._progress.add_task(
-            "[bold blue]Overall",
-            total=0,
-            match_set=self._overall_match_set,
-            total_frames=0,
-        )
-
         for i, video_path in enumerate(self.video_files):
             video_name = _truncate_name(video_path.name)
             task_id = self._progress.add_task(
@@ -500,12 +548,6 @@ class ExtractionProgress:
         self._current_match_set = set()
 
         self._overall_frames_total += estimated_frames
-        if self._overall_task is not None:
-            self._progress.update(
-                self._overall_task,
-                total=self._overall_frames_total,
-                total_frames=self._overall_frames_total,
-            )
 
         video_name = _truncate_name(video_path.name)
         self._video_task = self._video_tasks.get(self._current_video_index)
@@ -538,15 +580,8 @@ class ExtractionProgress:
             self._current_video_stats.confidences.append(confidence)
             self._current_video_stats.match_indices.append(frame_index)
             self._current_match_set.add(frame_index)
-            self._overall_match_set.add(self._overall_frames_processed)
 
         self._overall_frames_processed += 1
-        if self._overall_task is not None:
-            self._progress.update(
-                self._overall_task,
-                completed=self._overall_frames_processed,
-                match_set=self._overall_match_set,
-            )
 
         if self._video_task is not None:
             self._progress.update(
@@ -822,6 +857,7 @@ class ExhaustiveProgress:
         # Settings header
         if self._is_running:
             parts.append(self._make_header())
+            parts.append(Text(""))
 
         # Completed-video summaries
         for txt in self._completed_texts:
@@ -841,6 +877,7 @@ class ExhaustiveProgress:
             parts.append(Text(f"    {name}", style="dim"))
 
         if self._is_running:
+            parts.append(Text(""))
             parts.append(self._make_stats_panel())
 
         return Group(*parts)
