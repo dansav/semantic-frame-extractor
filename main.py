@@ -269,7 +269,13 @@ def main_with_tui(args, video_files, output_dir, interval, start_spec, end_spec)
                 )
 
                 # Start video progress
-                progress.start_video(video_path, duration, estimated_frames)
+                progress.start_video(
+                    video_path,
+                    duration,
+                    estimated_frames,
+                    analyzed_start_time=start_time,
+                    analyzed_end_time=end_time,
+                )
                 video_started = True
 
                 # Create callback that updates TUI

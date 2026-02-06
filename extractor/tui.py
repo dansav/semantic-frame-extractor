@@ -36,6 +36,8 @@ class VideoStats:
 
     path: Path
     duration: float = 0.0
+    analyzed_start_time: float | None = None
+    analyzed_end_time: float | None = None
     frames_processed: int = 0
     total_frames: int = 0
     matches_found: int = 0
@@ -70,6 +72,21 @@ class VideoStats:
         if not self.confidences:
             return 0.0
         return max(self.confidences)
+
+    @property
+    def analyzed_range(self) -> tuple[float, float]:
+        """Analyzed [start, end] time bounds in seconds."""
+        start = self.analyzed_start_time if self.analyzed_start_time is not None else 0.0
+        end = self.analyzed_end_time if self.analyzed_end_time is not None else self.duration
+        if end < start:
+            end = start
+        return start, end
+
+    @property
+    def analyzed_duration(self) -> float:
+        """Duration of analyzed time window in seconds."""
+        start, end = self.analyzed_range
+        return max(0.0, end - start)
 
 
 @dataclass
@@ -206,8 +223,8 @@ def _truncate_name(name: str, max_len: int = 50) -> str:
 def _get_timeline_width(console: Console) -> int:
     """Calculate timeline width based on terminal width."""
     terminal_width = console.width
-    # Reserve room for non-timeline columns and table borders.
-    return max(30, terminal_width - 86)
+    # Card layout uses almost full width; keep a small safety margin.
+    return max(30, terminal_width - 16)
 
 
 def _make_timeline(
@@ -277,37 +294,61 @@ def _print_summary(console: Console, stats: ExtractionStats) -> None:
 
     processed_videos = [v for v in stats.videos if v.frames_processed > 0]
     if processed_videos:
+        console.print(Text("Results by Video", style="bold italic", justify="center"))
+        console.print()
+
         timeline_width = _get_timeline_width(console)
+        total = len(processed_videos)
 
-        table = Table(title="Results by Video", show_header=True, expand=True)
-        table.add_column("Video", style="cyan", ratio=2)
-        table.add_column("Timeline", no_wrap=True, ratio=5)
-        table.add_column("Duration", justify="right")
-        table.add_column("Frames", justify="right")
-        table.add_column("Matches", justify="right", style="green")
-        table.add_column("Rate", justify="right")
-        table.add_column("Avg Conf", justify="right")
-        table.add_column("Time", justify="right")
-
-        for video in processed_videos:
-            duration_str = f"{video.duration:.1f}s"
-            match_rate = f"{video.match_rate:.1f}%"
-            avg_conf = f"{video.avg_confidence:.3f}" if video.confidences else "-"
-            time_str = f"{video.processing_time:.1f}s"
+        for i, video in enumerate(processed_videos, start=1):
             timeline = _make_timeline(video, console, width=timeline_width)
 
-            table.add_row(
-                video.path.name,
-                timeline,
-                duration_str,
-                str(video.frames_processed),
-                str(video.matches_found),
-                match_rate,
-                avg_conf,
-                time_str,
-            )
+            if video.sample_confidences:
+                conf_min = min(video.sample_confidences)
+                conf_avg = sum(video.sample_confidences) / len(video.sample_confidences)
+                conf_max = max(video.sample_confidences)
+                conf_stats = f"{conf_min:.3f}/{conf_avg:.3f}/{conf_max:.3f}"
+            else:
+                conf_stats = "-"
 
-        console.print(table)
+            start, end = video.analyzed_range
+
+            metrics = Text()
+            metrics.append("Range: ", style="dim")
+            metrics.append(f"{start:.1f}s-{end:.1f}s", style="white")
+            metrics.append("  │  ", style="dim")
+            metrics.append("Analyzed: ", style="dim")
+            metrics.append(f"{video.analyzed_duration:.1f}s", style="white")
+            metrics.append("  │  ", style="dim")
+            metrics.append("Samples: ", style="dim")
+            metrics.append(str(video.frames_processed), style="white")
+            metrics.append("  │  ", style="dim")
+            metrics.append("Matches: ", style="dim")
+            metrics.append(str(video.matches_found), style="green bold")
+            metrics.append(f" ({video.match_rate:.1f}%)", style="white")
+            metrics.append("  │  ", style="dim")
+            metrics.append("Conf (min/avg/max): ", style="dim")
+            metrics.append(conf_stats, style="white")
+            metrics.append("  │  ", style="dim")
+            metrics.append("Time: ", style="dim")
+            metrics.append(f"{video.processing_time:.1f}s", style="white")
+
+            body = Group(
+                Text(video.path.name, style="cyan bold"),
+                Text(""),
+                timeline,
+                Text(""),
+                metrics,
+            )
+            console.print(
+                Panel(
+                    body,
+                    title=f"Video {i}/{total}",
+                    border_style="blue",
+                    expand=True,
+                    padding=(0, 1),
+                )
+            )
 
     overall = Table.grid(padding=(0, 3))
     overall.add_column(style="bold")
@@ -559,12 +600,16 @@ class ExtractionProgress:
         video_path: Path,
         duration: float,
         estimated_frames: int,
+        analyzed_start_time: float | None = None,
+        analyzed_end_time: float | None = None,
     ) -> None:
         """Start processing a new video."""
         self._current_video_index += 1
         self._current_video_stats = VideoStats(
             path=video_path,
             duration=duration,
+            analyzed_start_time=analyzed_start_time,
+            analyzed_end_time=analyzed_end_time,
             total_frames=estimated_frames,
         )
         self._video_start_time = time.time()
@@ -943,11 +988,15 @@ class ExhaustiveProgress:
         video_path: Path,
         duration: float,
         estimated_frames: int,
+        analyzed_start_time: float | None = None,
+        analyzed_end_time: float | None = None,
     ) -> None:
         self._current_video_index += 1
         self._current_video_stats = VideoStats(
             path=video_path,
             duration=duration,
+            analyzed_start_time=analyzed_start_time,
+            analyzed_end_time=analyzed_end_time,
             total_frames=estimated_frames,
         )
         self._video_start_time = time.time()
