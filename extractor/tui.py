@@ -580,6 +580,23 @@ class ExtractionProgress:
         if self._live:
             self._live.update(self._make_display())
 
+    def skip_video(self, video_path: Path, reason: str | None = None) -> None:
+        """Mark a video as skipped/failed before processing starts."""
+        self._current_video_index += 1
+        self.stats.videos.append(VideoStats(path=video_path))
+
+        task_id = self._video_tasks.get(self._current_video_index)
+        if task_id is not None:
+            video_name = _truncate_name(video_path.name)
+            status = "error" if reason else "skipped"
+            self._progress.update(
+                task_id,
+                description=f"[red]{video_name} ({status})[/red]",
+            )
+
+        if self._live:
+            self._live.update(self._make_display())
+
     def log_saved_frame(self, output_path: Path, confidence: float) -> None:
         """Log a saved frame (shown below progress)."""
         pass
@@ -1106,6 +1123,27 @@ class ExhaustiveProgress:
         self._extract_task = None
         self._current_video_stats = None
         self._current_match_set = set()
+
+        if self._live:
+            self._live.update(self._make_display())
+
+    def skip_video(self, video_path: Path, reason: str | None = None) -> None:
+        """Mark a video as skipped/failed before processing starts."""
+        self._current_video_index += 1
+        self._overall_completed = min(
+            self._overall_total, (self._current_video_index + 1) * 100
+        )
+        self.stats.videos.append(VideoStats(path=video_path))
+
+        name = _truncate_name(video_path.name)
+        summary = Text()
+        summary.append("  ✗ ", style="red bold")
+        summary.append(name, style="red")
+        if reason:
+            summary.append(f"  error: {reason}", style="dim")
+        else:
+            summary.append("  skipped", style="dim")
+        self._completed_texts.append(summary)
 
         if self._live:
             self._live.update(self._make_display())

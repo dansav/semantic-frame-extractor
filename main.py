@@ -8,6 +8,7 @@ Usage:
 """
 
 import argparse
+import math
 import sys
 from glob import glob
 from pathlib import Path
@@ -217,7 +218,10 @@ def estimate_frames(
     """Estimate number of frames to be sampled."""
     start = start_time if start_time is not None else 0.0
     end = end_time if end_time is not None else duration
-    return max(1, int((end - start) / interval))
+    span = end - start
+    if span <= 0:
+        return 0
+    return math.ceil(span / interval)
 
 
 def main_with_tui(args, video_files, output_dir, interval, start_spec, end_spec):
@@ -247,6 +251,7 @@ def main_with_tui(args, video_files, output_dir, interval, start_spec, end_spec)
     with progress_ctx as progress:
         for video_path in video_files:
             video_name = video_path.stem
+            video_started = False
 
             try:
                 # Get video metadata
@@ -261,6 +266,7 @@ def main_with_tui(args, video_files, output_dir, interval, start_spec, end_spec)
 
                 # Start video progress
                 progress.start_video(video_path, duration, estimated_frames)
+                video_started = True
 
                 # Create callback that updates TUI
                 def tui_callback(frame, confidence, is_match):
@@ -304,7 +310,10 @@ def main_with_tui(args, video_files, output_dir, interval, start_spec, end_spec)
 
             except Exception as e:
                 progress.console.print(f"[red]Error processing {video_path}: {e}[/red]")
-                progress.finish_video()
+                if video_started:
+                    progress.finish_video()
+                else:
+                    progress.skip_video(video_path, str(e))
                 continue
 
 
