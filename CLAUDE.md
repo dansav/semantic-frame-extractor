@@ -8,6 +8,8 @@ Semantic Frame Extractor - Extract video frames matching a text query using visi
 
 ## Development Setup
 
+Use `uv` for all Python execution and dependency management. Except for getting pytorch which require some extra care to get platform specific setup (see `install_pytorch.sh`).
+
 ```bash
 # Install dependencies
 uv sync
