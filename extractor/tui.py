@@ -113,6 +113,14 @@ class ExtractionStats:
         return time.time() - self.start_time
 
     @property
+    def total_segments(self) -> int:
+        return sum(v.segments_found for v in self.videos)
+
+    @property
+    def total_frames_extracted(self) -> int:
+        return sum(v.frames_extracted for v in self.videos)
+
+    @property
     def frames_per_second(self) -> float:
         if self.elapsed_time == 0:
             return 0.0
@@ -329,12 +337,21 @@ def _print_summary(console: Console, stats: ExtractionStats) -> None:
             metrics.append("Analyzed: ", style="dim")
             metrics.append(f"{video.analyzed_duration:.1f}s", style="white")
             metrics.append("  │  ", style="dim")
-            metrics.append("Samples: ", style="dim")
-            metrics.append(str(video.frames_processed), style="white")
-            metrics.append("  │  ", style="dim")
-            metrics.append("Matches: ", style="dim")
-            metrics.append(str(video.matches_found), style="green bold")
-            metrics.append(f" ({video.match_rate:.1f}%)", style="white")
+
+            if stats.mode == "exhaustive":
+                metrics.append("Segments: ", style="dim")
+                metrics.append(str(video.segments_found), style="green bold")
+                metrics.append("  │  ", style="dim")
+                metrics.append("Frames extracted: ", style="dim")
+                metrics.append(str(video.frames_extracted), style="white")
+            else:
+                metrics.append("Samples: ", style="dim")
+                metrics.append(str(video.frames_processed), style="white")
+                metrics.append("  │  ", style="dim")
+                metrics.append("Matches: ", style="dim")
+                metrics.append(str(video.matches_found), style="green bold")
+                metrics.append(f" ({video.match_rate:.1f}%)", style="white")
+
             metrics.append("  │  ", style="dim")
             metrics.append("Time: ", style="dim")
             metrics.append(f"{video.processing_time:.1f}s", style="white")
@@ -368,8 +385,14 @@ def _print_summary(console: Console, stats: ExtractionStats) -> None:
     overall.add_column()
 
     overall.add_row("Total videos:", str(len(stats.videos)))
-    overall.add_row("Total frames processed:", str(stats.total_frames))
-    overall.add_row("Total matches:", f"[green bold]{stats.total_matches}[/green bold]")
+
+    if stats.mode == "exhaustive":
+        overall.add_row("Total segments:", f"[green bold]{stats.total_segments}[/green bold]")
+        overall.add_row("Total frames extracted:", str(stats.total_frames_extracted))
+    else:
+        overall.add_row("Total frames sampled:", str(stats.total_frames))
+        overall.add_row("Total matches:", f"[green bold]{stats.total_matches}[/green bold]")
+
     overall.add_row("Total time:", f"{stats.elapsed_time:.1f}s")
 
     if stats.elapsed_time > 0:
@@ -900,8 +923,7 @@ class ExhaustiveProgress:
             f"{done}/{n}  {elapsed_str}",
         )
 
-        total_frames, total_matches = self._get_current_totals()
-        match_style = "green bold" if self._last_was_match else "white"
+        total_segments, total_extracted = self._get_current_totals()
 
         grid.add_row(
             "Phase:",
@@ -910,18 +932,19 @@ class ExhaustiveProgress:
                 style="bold",
             ),
             "Segments:",
-            str(self._current_video_stats.segments_found)
+            Text(str(total_segments), style="green bold"),
+        )
+        grid.add_row(
+            "Frames extracted:",
+            str(total_extracted),
+            "Scanned:",
+            str(self._current_video_stats.frames_processed)
             if self._current_video_stats
             else "0",
         )
-        grid.add_row(
-            "Matches:",
-            Text(str(total_matches), style="green bold"),
-            "Frames:",
-            str(total_frames),
-        )
         conf_text = f"{self._last_confidence:.3f}"
-        fps = total_frames / elapsed if elapsed > 0 and total_frames > 0 else 0.0
+        match_style = "green bold" if self._last_was_match else "white"
+        fps = total_extracted / elapsed if elapsed > 0 and total_extracted > 0 else 0.0
         grid.add_row(
             "Last conf:",
             Text(conf_text, style=match_style),
@@ -965,12 +988,13 @@ class ExhaustiveProgress:
         return Group(*parts)
 
     def _get_current_totals(self) -> tuple[int, int]:
-        total_frames = self.stats.total_frames
-        total_matches = self.stats.total_matches
+        """Return (total_segments, total_frames_extracted) including in-progress video."""
+        total_segments = self.stats.total_segments
+        total_extracted = self.stats.total_frames_extracted
         if self._current_video_stats:
-            total_frames += self._current_video_stats.frames_processed
-            total_matches += self._current_video_stats.matches_found
-        return total_frames, total_matches
+            total_segments += self._current_video_stats.segments_found
+            total_extracted += self._current_video_stats.frames_extracted
+        return total_segments, total_extracted
 
     # ----- context manager -----
 
