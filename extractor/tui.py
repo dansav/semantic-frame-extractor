@@ -228,12 +228,16 @@ def _get_timeline_width(console: Console) -> int:
 
 
 def _make_timeline(
-    video: VideoStats, console: Console, width: int | None = None
+    video: VideoStats,
+    console: Console,
+    width: int | None = None,
+    height: int = 4,
 ) -> RenderableType:
     """
-    Create a two-row confidence timeline.
+    Create a vertically stretched confidence timeline.
 
-    - Height (character) encodes confidence with 16 vertical steps (2 x 8 levels).
+    - Each row represents an equal confidence band (top row is highest confidence).
+    - Character height within a row encodes how much of that band is filled.
     - Color encodes match status: green if bucket has at least one match, cyan otherwise.
     """
     if not video.sample_confidences:
@@ -243,8 +247,8 @@ def _make_timeline(
     confidences = video.sample_confidences
     n = len(confidences)
     timeline_width = width if width is not None else _get_timeline_width(console)
-    top = Text()
-    bottom = Text()
+    row_count = max(1, height)
+    rows = [Text() for _ in range(row_count)]
     match_set = set(video.match_indices)
 
     for i in range(timeline_width):
@@ -255,19 +259,24 @@ def _make_timeline(
 
         bucket = confidences[start:end]
         bucket_conf = max(bucket) if bucket else 0.0
-        level_16 = max(0, min(16, int(round(bucket_conf * 16))))
-        top_level = max(0, level_16 - 8)
-        bottom_level = min(8, level_16)
 
         has_match = any(idx in match_set for idx in range(start, end))
         style = "green bold" if has_match else "cyan"
 
-        top.append(spark_chars[top_level], style=style if top_level > 0 else "dim")
-        bottom.append(
-            spark_chars[bottom_level], style=style if bottom_level > 0 else "dim"
-        )
+        for row_index, row in enumerate(rows):
+            band_top = 1.0 - (row_index / row_count)
+            band_bottom = 1.0 - ((row_index + 1) / row_count)
+            if bucket_conf <= band_bottom:
+                fill = 0.0
+            elif bucket_conf >= band_top:
+                fill = 1.0
+            else:
+                fill = (bucket_conf - band_bottom) / (band_top - band_bottom)
 
-    return Group(top, bottom)
+            level = max(0, min(8, int(round(fill * 8))))
+            row.append(spark_chars[level], style=style if level > 0 else "dim")
+
+    return Group(*rows)
 
 
 def _print_summary(console: Console, stats: ExtractionStats) -> None:
@@ -301,7 +310,7 @@ def _print_summary(console: Console, stats: ExtractionStats) -> None:
         total = len(processed_videos)
 
         for i, video in enumerate(processed_videos, start=1):
-            timeline = _make_timeline(video, console, width=timeline_width)
+            timeline = _make_timeline(video, console, width=timeline_width, height=4)
 
             if video.sample_confidences:
                 conf_min = min(video.sample_confidences)
@@ -327,23 +336,27 @@ def _print_summary(console: Console, stats: ExtractionStats) -> None:
             metrics.append(str(video.matches_found), style="green bold")
             metrics.append(f" ({video.match_rate:.1f}%)", style="white")
             metrics.append("  │  ", style="dim")
-            metrics.append("Conf (min/avg/max): ", style="dim")
-            metrics.append(conf_stats, style="white")
-            metrics.append("  │  ", style="dim")
             metrics.append("Time: ", style="dim")
             metrics.append(f"{video.processing_time:.1f}s", style="white")
 
+            conf_line = Text()
+            conf_line.append("Conf (min/avg/max): ", style="dim")
+            conf_line.append(conf_stats, style="white")
+
+            title = Text()
+            title.append(_truncate_name(video.path.name, max_len=80), style="cyan bold")
+            title.append(f" ({i}/{total})", style="dim")
+
             body = Group(
-                Text(video.path.name, style="cyan bold"),
-                Text(""),
                 timeline,
-                Text(""),
+                conf_line,
                 metrics,
             )
             console.print(
                 Panel(
                     body,
-                    title=f"Video {i}/{total}",
+                    title=title,
+                    title_align="left",
                     border_style="blue",
                     expand=True,
                     padding=(0, 1),
@@ -364,7 +377,7 @@ def _print_summary(console: Console, stats: ExtractionStats) -> None:
         overall.add_row("Average speed:", f"{fps:.1f} frames/s")
 
     console.print()
-    console.print(Panel(overall, title="Summary", border_style="blue"))
+    console.print(Panel(overall, title="Summary", border_style="blue", expand=False))
 
 
 # ---------------------------------------------------------------------------
