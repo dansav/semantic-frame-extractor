@@ -28,4 +28,5 @@ videos/
 *.mkv
 
 test*.sh
+test*.ps1
 

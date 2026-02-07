@@ -1,14 +1,19 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Codex CLI and other coding agents when working in this repository.
 
 ## Project Overview
 
-Semantic Frame Extractor - Extract video frames matching a text query using vision LLMs.
+Semantic Frame Extractor: extract video frames matching a text query using vision LLMs.
 
 ## Development Setup
 
-Use `uv` for all Python execution and dependency management. Except for getting pytorch which require some extra care to get platform specific setup (see `install_pytorch.sh`).
+Use `uv` for all Python execution and dependency management.
+
+- Do not run `python`, `pip`, or `pytest` directly.
+- Use `uv run ...` for Python commands and scripts.
+- Use `uv sync` to install dependencies.
+- PyTorch setup is platform-sensitive; use `./install_pytorch.sh` when needed.
 
 ```bash
 # Install dependencies
@@ -19,7 +24,7 @@ uv run main.py "**/*.mp4" "A dark blue car" --mode quick
 uv run main.py "clip.mp4" "Person waving" --mode exhaustive --threshold 0.6
 ```
 
-For API-based matchers, requires an OpenAI-compatible server running locally (e.g., LM Studio, vLLM).
+For API-based matchers, an OpenAI-compatible server must be running locally (for example LM Studio or vLLM).
 
 ## Architecture
 
@@ -37,14 +42,13 @@ extractor/
 
 ## Extraction Modes
 
-**Quick mode**: Samples frames at intervals (default 2s), batches to matcher, returns matches. Fast for finding representative frames.
-
-**Exhaustive mode**: When a match is found during sampling (default 1s), binary searches backward to find the first matching frame, then captures every frame until no longer matching. Ensures complete segment capture.
+- Quick mode: samples frames at intervals (default `2s`), batches matcher calls, returns matches. Fast for representative frames.
+- Exhaustive mode: samples frames (default `1s`), refines match boundaries with binary search, then captures all matching frames in matching segments.
 
 ## Matcher Types
 
-- `TransformersEmbeddingMatcher` (default): Uses Qwen3-VL-Embedding directly via transformers. Downloads model from HuggingFace on first run. Fastest after initial load.
-- `ChatApiMatcher`: Uses OpenAI-compatible chat completions API. Better for complex reasoning queries.
+- `TransformersEmbeddingMatcher` (default): uses Qwen3-VL-Embedding locally via `transformers`. Downloads from HuggingFace on first run.
+- `ChatApiMatcher`: uses OpenAI-compatible chat completions API and can work better for complex reasoning queries.
 
 ## Output Modes
 
@@ -54,3 +58,10 @@ The tool has two output paths that must be kept in sync:
 - **Plain text mode** (`--no-tui`): Simple print-based output in `main.py` (`main_plain()`).
 
 When adding or modifying features that affect progress reporting or summary output, update both output paths. The two modes display different metrics per extraction mode: quick mode shows matches/samples, exhaustive mode shows segments/frames extracted.
+
+## Agent Workflow Expectations
+
+- Keep changes focused and minimal.
+- Preserve existing CLI behavior unless the task explicitly changes it.
+- Validate changes with repo scripts/commands via `uv run` where possible.
+- If a command is expected to be long-running, state intent before running it.

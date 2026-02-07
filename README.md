@@ -116,6 +116,7 @@ uv run main.py "video.mp4" "cat" --matcher chat-api
 | `--matcher` | Backend: `transformers`, `chat-api` | `transformers` |
 | `--model` | Specific model name/path to use | Auto-detected |
 | `--max-pixels` | Resolution limit for inference | 1,000,000 (1MP) |
+| `--no-tui` | Disable Rich TUI progress display; use plain text output | Off |
 
 > **Alias Note**: `generation` is deprecated aliases for `chat-api`.
 
